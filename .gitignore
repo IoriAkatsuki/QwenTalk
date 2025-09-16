@@ -96,3 +96,5 @@ penv/
 .idea/
 .vscode/
 Qwen3-8B-nf4-ov/
+Qwen3-8B-nf4-ov/
+__pycache__/
