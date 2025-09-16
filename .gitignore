@@ -95,3 +95,4 @@ penv/
 # IDE specific files
 .idea/
 .vscode/
+Qwen3-8B-nf4-ov/
