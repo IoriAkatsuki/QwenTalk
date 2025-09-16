@@ -1,0 +1,6 @@
+openvino>=2023.3.0
+transformers>=4.30.0
+torch
+huggingface_hub>=0.17.0
+tqdm
+customtkinter>=5.2.0
