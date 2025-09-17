@@ -66,17 +66,27 @@ class ChatGUI(ctk.CTk):
         self.clear_button = ctk.CTkButton(self.sidebar_frame, text="Clear Current Chat", command=self.clear_history)
         self.clear_button.grid(row=8, column=0, padx=20, pady=5, sticky="ew")
 
-        # Thinking Mode
+        # --- Thinking Mode ---
+        self.mode_label = ctk.CTkLabel(self.sidebar_frame, text="Response Modes:", anchor="w")
+        self.mode_label.grid(row=9, column=0, padx=20, pady=(20, 0))
+
         self.creative_mode_switch = ctk.CTkSwitch(self.sidebar_frame, text="Creative Mode", command=self.toggle_creative_mode)
-        self.creative_mode_switch.grid(row=9, column=0, padx=20, pady=10, sticky="w")
+        self.creative_mode_switch.grid(row=10, column=0, padx=20, pady=10, sticky="w")
         self.creative_mode_switch.select() # Default to ON
+
+        self.search_switch = ctk.CTkSwitch(self.sidebar_frame, text="Web Search", command=self.toggle_search_mode)
+        self.search_switch.grid(row=11, column=0, padx=20, pady=10, sticky="w")
+
+        self.no_think_switch = ctk.CTkSwitch(self.sidebar_frame, text="Direct Response", command=self.toggle_no_think_mode)
+        self.no_think_switch.grid(row=12, column=0, padx=20, pady=10, sticky="w")
+
 
         # UI Scaling
         self.scaling_label = ctk.CTkLabel(self.sidebar_frame, text="Font Size:", anchor="w")
-        self.scaling_label.grid(row=9, column=0, padx=20, pady=(10, 0))
+        self.scaling_label.grid(row=13, column=0, padx=20, pady=(10, 0))
         self.scaling_slider = ctk.CTkSlider(self.sidebar_frame, from_=0.8, to=2.0, command=self.update_font_scaling)
         self.scaling_slider.set(1.0)
-        self.scaling_slider.grid(row=10, column=0, padx=20, pady=(5, 20), sticky="ew")
+        self.scaling_slider.grid(row=14, column=0, padx=20, pady=(5, 20), sticky="ew")
 
         # --- Main Chat Area ---
         self.chat_frame = ctk.CTkFrame(self, corner_radius=10)
@@ -280,6 +290,30 @@ class ChatGUI(ctk.CTk):
             self.chat_engine.set_creative_mode(is_creative)
             mode = "Creative" if is_creative else "Deterministic"
             self.status_label.configure(text=f"Status: Switched to {mode} mode.")
+
+    def toggle_search_mode(self):
+        if not self.chat_engine:
+            return
+        is_enabled = self.search_switch.get() == 1
+        self.chat_engine.set_search_mode(is_enabled)
+        if is_enabled:
+            self.no_think_switch.deselect()
+            self.chat_engine.set_no_think_mode(False)
+            self.status_label.configure(text="Status: Web Search mode enabled.")
+        else:
+            self.status_label.configure(text="Status: Web Search mode disabled.")
+
+    def toggle_no_think_mode(self):
+        if not self.chat_engine:
+            return
+        is_enabled = self.no_think_switch.get() == 1
+        self.chat_engine.set_no_think_mode(is_enabled)
+        if is_enabled:
+            self.search_switch.deselect()
+            self.chat_engine.set_search_mode(False)
+            self.status_label.configure(text="Status: Direct Response mode enabled.")
+        else:
+            self.status_label.configure(text="Status: Direct Response mode disabled.")
 
     def switch_session(self, session_name):
         if self.chat_engine:
