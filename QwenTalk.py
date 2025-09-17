@@ -79,6 +79,7 @@ class ChatEngine:
                 self.generation_config.temperature = 0.01
 
     def set_search_mode(self, enabled: bool):
+        print(f"[DEBUG] Engine: set_search_mode called. Setting search_enabled to: {enabled}") # DEBUG
         self.search_enabled = enabled
 
     def set_no_think_mode(self, enabled: bool):
@@ -171,6 +172,8 @@ class ChatEngine:
     def generate_stream(self, user_input: str) -> Iterator[str]:
         if not self.pipe:
             raise RuntimeError("Model is not loaded.")
+
+        print(f"[DEBUG] Engine: generate_stream called. search_enabled is: {self.search_enabled}") # DEBUG
 
         self.add_to_history("user", user_input)
         prompt = ""

@@ -295,6 +295,7 @@ class ChatGUI(ctk.CTk):
         if not self.chat_engine:
             return
         is_enabled = self.search_switch.get() == 1
+        print(f"[DEBUG] GUI: toggle_search_mode called. Switch is_enabled: {is_enabled}") # DEBUG
         self.chat_engine.set_search_mode(is_enabled)
         if is_enabled:
             self.no_think_switch.deselect()
