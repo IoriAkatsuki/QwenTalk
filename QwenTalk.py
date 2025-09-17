@@ -41,7 +41,8 @@ class ChatEngine:
         """
         print(f"[INFO] Attempting to load model on device: {self.device}...")
         try:
-            self.pipe = ov_genai.LLMPipeline(self.model_path, self.device)
+            config = {"PERFORMANCE_HINT": "LATENCY", "MAX_PROMPT_LEN": 4096}
+            self.pipe = ov_genai.LLMPipeline(self.model_path, self.device, config)
             self.tokenizer = AutoTokenizer.from_pretrained(self.model_path, trust_remote_code=True)
             print(f"[SUCCESS] Model loaded successfully on {self.device}.")
         except Exception as e:
@@ -50,7 +51,8 @@ class ChatEngine:
                 print("[INFO] Falling back to CPU...")
                 try:
                     self.device = "CPU"
-                    self.pipe = ov_genai.LLMPipeline(self.model_path, self.device)
+                    config = {"PERFORMANCE_HINT": "LATENCY", "MAX_PROMPT_LEN": 4096}
+                    self.pipe = ov_genai.LLMPipeline(self.model_path, self.device, config)
                     self.tokenizer = AutoTokenizer.from_pretrained(self.model_path, trust_remote_code=True)
                     print("[SUCCESS] Model loaded successfully on CPU.")
                 except Exception as e2:

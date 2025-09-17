@@ -120,7 +120,8 @@ class TalkCLI:
         print(f"[INFO] 正在加载模型: {self.model_path}")
         try:
             print(f"[INFO] 尝试在 {self.device} 上加载模型...")
-            self.pipe = ov_genai.LLMPipeline(self.model_path, self.device)
+            config = {"PERFORMANCE_HINT": "LATENCY", "MAX_PROMPT_LEN": 4096}
+            self.pipe = ov_genai.LLMPipeline(self.model_path, self.device, config)
             print(f"[SUCCESS] 模型成功加载到 {self.device}!")
         except Exception as e:
             print(f"[WARNING] 在 {self.device} 上加载失败: {e}")
@@ -128,7 +129,8 @@ class TalkCLI:
                 print("[INFO] 尝试回退到 CPU ...")
                 try:
                     self.device = "CPU"
-                    self.pipe = ov_genai.LLMPipeline(self.model_path, self.device)
+                    config = {"PERFORMANCE_HINT": "LATENCY", "MAX_PROMPT_LEN": 4096}
+                    self.pipe = ov_genai.LLMPipeline(self.model_path, self.device, config)
                     print("[SUCCESS] 模型成功加载到 CPU!")
                 except Exception as e2:
                     print(f"[ERROR] CPU加载也失败: {e2}", file=sys.stderr)
