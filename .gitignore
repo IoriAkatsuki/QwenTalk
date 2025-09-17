@@ -95,6 +95,6 @@ penv/
 # IDE specific files
 .idea/
 .vscode/
+
+# Model Files
 Qwen3-8B-nf4-ov/
-Qwen3-8B-nf4-ov/
-__pycache__/
