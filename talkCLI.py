@@ -19,7 +19,7 @@ import sys
 import time
 from datetime import datetime
 from typing import List, Dict
-import requests
+import subprocess
 
 class ChatHistory:
     """
@@ -51,50 +51,55 @@ class WebSearchTool:
     """
     提供联网搜索功能的工具。
 
-    使用DuckDuckGo的即时问答API, 无需申请API Key。
+    通过调用 open-websearch MCP 工具执行搜索。
     """
-    def search(self, query: str, max_results: int = 3) -> str:
+    def search(self, query: str) -> str:
         """
         执行网络搜索并返回格式化的结果字符串。
 
         Args:
             query: 搜索的关键词。
-            max_results: 返回的最大相关主题数。
 
         Returns:
-            一个包含搜索摘要和相关主题的字符串, 或错误信息。
+            一个包含搜索结果的字符串, 或错误信息。
         """
         if not query:
             return "错误: 请提供搜索关键词。"
-        print(f"\n[INFO] 正在搜索: {query} ...")
+        print(f"\n[INFO] 正在通过 open-websearch 搜索: {query} ...")
         try:
-            # 使用DuckDuckGo的API进行搜索
-            url = f"https://api.duckduckgo.com/?q={query}&format=json&pretty=1"
-            response = requests.get(url, timeout=10)
-            response.raise_for_status()
-            data = response.json()
+            # 构建命令
+            # 使用 npx 调用最新的 open-websearch 包
+            command = [
+                "npx", "-y", "open-websearch@latest",
+                "--engine", "duckduckgo", # 根据用户之前的参考信息，使用duckduckgo
+                "--query", query
+            ]
 
-            results = []
-            # 1. 添加摘要信息 (Abstract)
-            if data.get("AbstractText"):
-                results.append(f"摘要: {data['AbstractText']}")
+            # 执行命令
+            # capture_output=True 将 stdout 和 stderr 捕获到 result.stdout 和 result.stderr
+            # text=True 将 stdout 和 stderr 解码为文本
+            # check=True 如果命令返回非零退出码 (表示错误), 则会引发 CalledProcessError
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                check=True,
+                shell=True, # 在Windows上使用shell=True可能有助于找到npx
+                encoding='utf-8'
+            )
 
-            # 2. 添加相关主题 (Related Topics)
-            related_topics = data.get("RelatedTopics", [])
-            if related_topics:
-                for i, topic in enumerate(related_topics[:max_results]):
-                    if "Text" in topic:
-                        results.append(f"相关信息{i+1}: {topic['Text']}")
-
-            if not results:
+            # 返回 stdout 的内容
+            if not result.stdout.strip():
                 return "抱歉，没有找到相关的在线信息。"
+            return result.stdout.strip()
 
-            return "\n".join(results)
-
-        except requests.RequestException as e:
-            return f"网络搜索失败: {e}"
+        except FileNotFoundError:
+            return "错误: `npx` 命令未找到。请确保您已安装 Node.js。"
+        except subprocess.CalledProcessError as e:
+            # 如果命令执行失败, 返回 stderr 的内容
+            return f"搜索时出错: {e.stderr}"
         except Exception as e:
-            return f"处理搜索结果时出错: {e}"
+            return f"处理搜索结果时发生未知错误: {e}"
 
 class TalkCLI:
     """
