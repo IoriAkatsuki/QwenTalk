@@ -2,22 +2,35 @@
 
 This project exposes board-local perception and system tools through a stdio MCP server so Hermes Agent can orchestrate the DK-2500 edge-agent stack.
 
-## Target runtime
+## Target Runtime
 
-Hermes Agent 0.12 rejects model context windows below 64K. Use the Qwen3.6 + compressed KV-cache profile below for Hermes sessions:
+Hermes Agent 0.12 rejects model context windows below 64K. The board profile now uses Qwen3.6 with 128K context and q4_0 KV cache:
+
+```bash
+cd /home/intel/QwenTalk
+./qwen36_128k_q4_start.sh
+```
+
+Equivalent raw command:
 
 ```bash
 source /opt/intel/oneapi/setvars.sh
 /home/intel/llama.cpp/build_sycl/bin/llama-server \
   -m /home/intel/models/Qwen3.6-35B-A3B-UD-IQ2_M.gguf \
-  -ngl 99 -fa 0 \
-  --cache-type-k q8_0 --cache-type-v f16 \
-  -c 64000 \
+  -ngl 99 -fa 1 \
+  --cache-type-k q4_0 --cache-type-v q4_0 \
+  -c 128000 -np 1 \
+  --cache-ram 0 --no-cache-prompt --ctx-checkpoints 0 \
   --port 8080 --host 127.0.0.1 \
   --jinja --reasoning off
 ```
 
-For low-memory native QwenTalk tests, `-c 8192` is still useful, but Hermes one-shot/chat startup will refuse that declared context length.
+Notes:
+
+- V-cache q4 requires flash attention, so `-fa 1` is mandatory.
+- `-np 1` keeps one 128K slot; default auto slots can inflate memory pressure.
+- `--cache-ram 0 --no-cache-prompt --ctx-checkpoints 0` disables prompt-cache/checkpoint overhead for the long-context server profile.
+- For low-memory native QwenTalk tests, `-c 8192` is still useful, but Hermes should point at the 128K profile.
 
 ## Hermes Config
 
@@ -25,7 +38,7 @@ Copy or merge `hermes_qwentalk_config.example.yaml` into `~/.hermes/config.yaml`
 
 - custom OpenAI-compatible provider at `http://127.0.0.1:8080/v1`
 - `model.default: Qwen3.6-35B-A3B-UD-IQ2_M`
-- `model.context_length: 64000`
+- `model.context_length: 128000`
 - `qwentalk_board` MCP stdio server
 - `platform_toolsets.cli` with `qwentalk_board` enabled
 

@@ -1,13 +1,13 @@
 # Merge these snippets into ~/.hermes/config.yaml on the DK-2500 board.
-# Hermes Agent 0.12 rejects model context windows below 64K, so this profile
-# expects llama-server to be launched with -c 64000 for Hermes sessions.
+# Hermes Agent 0.12 rejects model context windows below 64K.
+# This profile uses Qwen3.6 with 128K context and q4_0 KV cache.
 
 model:
   provider: custom
   default: Qwen3.6-35B-A3B-UD-IQ2_M
   base_url: http://127.0.0.1:8080/v1
   api_mode: chat_completions
-  context_length: 64000
+  context_length: 128000
   max_tokens: 512
 
 providers:
@@ -15,10 +15,10 @@ providers:
     base_url: http://127.0.0.1:8080/v1
     api_mode: chat_completions
     default_model: Qwen3.6-35B-A3B-UD-IQ2_M
-    context_length: 64000
+    context_length: 128000
     models:
       Qwen3.6-35B-A3B-UD-IQ2_M:
-        context_length: 64000
+        context_length: 128000
 
 agent:
   max_turns: 24
