@@ -1,0 +1,32 @@
+# Merge these snippets into ~/.hermes/config.yaml on the DK-2500 board.
+
+model:
+  provider: custom
+  model_name: Qwen3.6-35B-A3B-UD-IQ2_M
+  base_url: http://127.0.0.1:8080/v1
+  api_key: local-no-key
+
+mcp_servers:
+  qwentalk_board:
+    command: /home/intel/QwenTalk/qwentalk_mcp_start.sh
+    args: []
+    timeout: 180
+    connect_timeout: 60
+    enabled: true
+    tools:
+      include:
+        - calculate
+        - get_system_info
+        - get_temperature
+        - get_distance
+        - get_gesture
+        - get_scene
+      resources: false
+      prompts: false
+
+personalities:
+  dk2500_edge: |
+    你是运行在 Intel DK-2500 板卡上的本地边缘智能体。
+    你通过本地 Qwen3.6、D435 深度相机、OpenVINO NPU 和本地语音链路与人交互。
+    回答简洁，优先调用本地 MCP 工具获取实时状态。
+    不把云端能力说成本地能力；传感器不可用时直接说明。
