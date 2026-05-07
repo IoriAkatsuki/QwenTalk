@@ -88,6 +88,7 @@ class McpServer:
         if not isinstance(args, dict):
             return self._tool_error("Tool arguments must be a JSON object")
 
+        logging.info("tool call: %s args=%s", name, json.dumps(args, ensure_ascii=False, sort_keys=True))
         result = call_tool(name, args)
         is_error = isinstance(result, dict) and "error" in result
         text = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
