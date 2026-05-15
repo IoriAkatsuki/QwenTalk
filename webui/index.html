@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>QwenTalk · D435 手势 WebUI</title>
+<style>
+  :root{--bg:#0b0f17;--card:#141b26;--ink:#e6edf3;--mute:#7d8898;--ok:#3fb950;--bad:#f85149;--accent:#58a6ff;--warn:#d29922;--border:#1f2733}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,'Segoe UI',Roboto,'Noto Sans CJK SC','Microsoft YaHei',sans-serif;background:var(--bg);color:var(--ink)}
+  header{padding:14px 24px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center}
+  header h1{margin:0;font-size:16px;font-weight:600}
+  header .pill{font-size:12px;color:var(--mute);padding:3px 10px;border:1px solid var(--border);border-radius:99px}
+  main{display:grid;grid-template-columns:1.6fr 1fr;gap:18px;padding:18px;min-height:calc(100vh - 56px)}
+  @media (max-width:1100px){main{grid-template-columns:1fr}}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px}
+  .card h2{margin:0 0 10px 0;font-size:13px;color:var(--mute);font-weight:500;letter-spacing:.5px;text-transform:uppercase}
+  #video-wrap{position:relative;background:#000;border-radius:8px;overflow:hidden;aspect-ratio:4/3}
+  #video-wrap img{width:100%;height:100%;display:block;object-fit:contain}
+  #video-overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--mute);font-size:14px;pointer-events:none}
+  #video-overlay.hidden{display:none}
+
+  .kv{display:grid;grid-template-columns:1fr auto;gap:8px 16px;font-size:14px}
+  .kv .k{color:var(--mute)}
+  .kv .v{font-variant-numeric:tabular-nums;text-align:right}
+  .gesture-big{font-size:32px;font-weight:700;letter-spacing:.5px;margin:6px 0 4px}
+  .gesture-conf{color:var(--mute);font-size:13px;margin-bottom:14px}
+  .gesture-emoji{font-size:46px;line-height:1;margin-right:10px;vertical-align:middle}
+
+  .ruler{position:relative;height:34px;background:#0f1620;border-radius:6px;border:1px solid var(--border);margin:10px 0 4px}
+  .ruler .green-zone{position:absolute;top:0;bottom:0;background:rgba(63,185,80,.15);border-left:2px solid var(--ok);border-right:2px solid var(--ok)}
+  .ruler .marker{position:absolute;top:-3px;bottom:-3px;width:3px;background:var(--accent);box-shadow:0 0 8px var(--accent);transition:left .2s}
+  .ruler-axis{display:flex;justify-content:space-between;font-size:11px;color:var(--mute);margin-top:4px}
+
+  .stats{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px}
+  .stat{background:#0f1620;border:1px solid var(--border);border-radius:6px;padding:8px 10px}
+  .stat .name{font-size:12px;color:var(--mute)}
+  .stat .num{font-size:18px;font-weight:600;font-variant-numeric:tabular-nums}
+  .badge{display:inline-block;font-size:11px;padding:1px 7px;border-radius:99px;border:1px solid var(--border)}
+  .badge.ok{color:var(--ok);border-color:rgba(63,185,80,.4)}
+  .badge.bad{color:var(--bad);border-color:rgba(248,81,73,.4)}
+  .badge.warn{color:var(--warn);border-color:rgba(210,153,34,.4)}
+  .row{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+  footer{padding:10px 24px;color:var(--mute);font-size:11px;text-align:center;border-top:1px solid var(--border)}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>QwenTalk · D435 + NPU 3D 手势 WebUI</h1>
+  <span class="pill" id="conn-pill">连接中…</span>
+</header>
+
+<main>
+  <section class="card" style="padding:8px">
+    <div id="video-wrap">
+      <img id="stream-img" src="/stream.mjpg" alt="D435 实时画面">
+      <div id="video-overlay">视频加载中…</div>
+    </div>
+  </section>
+
+  <section style="display:flex;flex-direction:column;gap:18px">
+    <div class="card">
+      <h2>当前手势</h2>
+      <div class="row">
+        <span class="gesture-emoji" id="ge-icon">·</span>
+        <div>
+          <div class="gesture-big" id="ge-name">--</div>
+          <div class="gesture-conf"><span id="ge-conf">0%</span> · 第 <span id="ge-frame">0</span> 帧</div>
+        </div>
+      </div>
+      <div class="kv">
+        <span class="k">Palm 置信</span><span class="v" id="kv-palm">0.00</span>
+        <span class="k">手腕距离</span><span class="v"><span id="kv-wrist">--</span> m</span>
+        <span class="k">FPS</span><span class="v" id="kv-fps">0.0</span>
+        <span class="k">闸门状态</span><span class="v"><span id="kv-gate" class="badge">--</span></span>
+        <span class="k">JPEG 编码器</span><span class="v" id="kv-encoder">--</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>距离闸门 (P1-1)</h2>
+      <div class="ruler" id="ruler">
+        <div class="green-zone" id="green-zone"></div>
+        <div class="marker" id="marker" style="left:-10px"></div>
+      </div>
+      <div class="ruler-axis">
+        <span>0 m</span><span>0.5 m</span><span>1.0 m</span><span>1.5 m</span><span>2.0 m</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>累计统计 (P1-2)</h2>
+      <div class="stats" id="stats-grid"></div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  Intel DK-2500 · Arrow Lake-U · D435 RGB-D · AI Boost NPU · 手势：open_palm / fist / point / thumbs_up / peace
+</footer>
+
+<script>
+const RULER_MAX_M = 2.0;
+const GESTURE_EMOJI = {
+  open_palm:"🖐", fist:"✊", point:"☝", thumbs_up:"👍", peace:"✌",
+  no_palm:"·", no_hand:"·", no_depth:"⚠", out_of_range:"↗", too_close:"↙",
+  init:"·", unknown:"?"
+};
+const STAT_KEYS = ["open_palm","fist","point","thumbs_up","peace",
+                   "out_of_range","too_close","no_palm","no_hand","no_depth"];
+
+const els = {
+  geName: document.getElementById("ge-name"),
+  geIcon: document.getElementById("ge-icon"),
+  geConf: document.getElementById("ge-conf"),
+  geFrame: document.getElementById("ge-frame"),
+  kvPalm: document.getElementById("kv-palm"),
+  kvWrist: document.getElementById("kv-wrist"),
+  kvFps: document.getElementById("kv-fps"),
+  kvGate: document.getElementById("kv-gate"),
+  kvEncoder: document.getElementById("kv-encoder"),
+  greenZone: document.getElementById("green-zone"),
+  marker: document.getElementById("marker"),
+  statsGrid: document.getElementById("stats-grid"),
+  connPill: document.getElementById("conn-pill"),
+  videoOverlay: document.getElementById("video-overlay"),
+  streamImg: document.getElementById("stream-img"),
+};
+
+let lastFrameIdx = -1;
+
+els.streamImg.addEventListener("load", () => els.videoOverlay.classList.add("hidden"));
+els.streamImg.addEventListener("error", () => {
+  els.videoOverlay.textContent = "视频流断开，2 s 后重连…";
+  els.videoOverlay.classList.remove("hidden");
+  setTimeout(() => { els.streamImg.src = "/stream.mjpg?t=" + Date.now(); }, 2000);
+});
+
+function setGate(wrist, dmin, dmax){
+  let cls = "badge", txt = "--";
+  if (wrist < 0)         { cls = "badge warn"; txt = "无深度"; }
+  else if (wrist < dmin) { cls = "badge bad";  txt = "too_close"; }
+  else if (wrist > dmax) { cls = "badge bad";  txt = "out_of_range"; }
+  else                   { cls = "badge ok";   txt = "in_range"; }
+  els.kvGate.className = cls;
+  els.kvGate.textContent = txt;
+}
+
+function renderStats(stats){
+  // 用 DOM API 重建，避免 innerHTML XSS 风险
+  const frag = document.createDocumentFragment();
+  for (const k of STAT_KEYS){
+    const v = stats[k] ?? 0;
+    const cell = document.createElement("div");
+    cell.className = "stat";
+    const name = document.createElement("div");
+    name.className = "name";
+    name.textContent = k;
+    const num = document.createElement("div");
+    num.className = "num";
+    num.textContent = String(v);
+    cell.appendChild(name);
+    cell.appendChild(num);
+    frag.appendChild(cell);
+  }
+  els.statsGrid.replaceChildren(frag);
+}
+
+function renderState(s){
+  els.geName.textContent = s.gesture;
+  els.geIcon.textContent = GESTURE_EMOJI[s.gesture] ?? "?";
+  els.geConf.textContent = (s.conf * 100).toFixed(0) + "%";
+  els.geFrame.textContent = String(s.frame_idx);
+  els.kvPalm.textContent = s.palm_score.toFixed(2);
+  els.kvWrist.textContent = s.wrist_m >= 0 ? s.wrist_m.toFixed(2) : "--";
+  els.kvFps.textContent = s.fps.toFixed(1);
+  els.kvEncoder.textContent = s.encoder_backend ?? "--";
+
+  setGate(s.wrist_m, s.dist_min_m, s.dist_max_m);
+
+  els.greenZone.style.left  = (s.dist_min_m / RULER_MAX_M * 100) + "%";
+  els.greenZone.style.width = ((s.dist_max_m - s.dist_min_m) / RULER_MAX_M * 100) + "%";
+  const pct = Math.max(0, Math.min(100, s.wrist_m / RULER_MAX_M * 100));
+  els.marker.style.left = s.wrist_m >= 0 ? `calc(${pct}% - 1.5px)` : "-10px";
+
+  renderStats(s.stats || {});
+
+  if (s.frame_idx !== lastFrameIdx){
+    lastFrameIdx = s.frame_idx;
+    els.connPill.textContent = `已连接 · ${s.fps.toFixed(1)} FPS`;
+  }
+}
+
+function startSSE(){
+  const es = new EventSource("/events");
+  es.onmessage = (ev) => {
+    try { renderState(JSON.parse(ev.data)); }
+    catch (e) { console.error(e); }
+  };
+  es.onerror = () => {
+    els.connPill.textContent = "SSE 断开，重连中…";
+    es.close();
+    setTimeout(startSSE, 2000);
+  };
+}
+startSSE();
+</script>
+</body>
+</html>
