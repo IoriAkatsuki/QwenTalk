@@ -58,13 +58,13 @@ else
     fail "/api/state 缺 perception"
 fi
 
-# Test 2: /intel_chan 返回 HTML
+# Test 2: /intel_chan 返回 HTML — 全文 grep 而不是 head 200（"Intel 酱"在 <title>，偏后）
 log "Test 2: /intel_chan"
-resp=$(curl -s --max-time 3 "$BASE/intel_chan" | head -c 200)
-if echo "$resp" | grep -qi "intel"; then
-    pass "/intel_chan 返回 HTML"
+resp=$(curl -s --max-time 5 "$BASE/intel_chan")
+if echo "$resp" | grep -qi "intel.*酱\|Live2D\|live2dcubismcore"; then
+    pass "/intel_chan 返回 Live2D HTML"
 else
-    fail "/intel_chan 内容异常"
+    fail "/intel_chan 内容异常 (size=$(echo -n "$resp" | wc -c))"
 fi
 
 # Test 3: WS /ws/perception 能收到至少 1 帧
@@ -138,13 +138,17 @@ else
     skip "llama-server 8080 不可达，跳过 chat 测试"
 fi
 
-# Test 5: /stream.mjpg HEAD multipart 头
+# Test 5: /stream.mjpg multipart 头（依赖 D435 实际出帧，无 D435 则 skip）
+# StreamingResponse 在第一个 yield 才发 header；用 GET + range 取头部
 log "Test 5: /stream.mjpg"
-ct=$(curl -s -I --max-time 5 "$BASE/stream.mjpg" 2>/dev/null | grep -i "content-type" | head -1)
+ct=$(curl -s -o /dev/null -D - --max-time 6 -r 0-0 "$BASE/stream.mjpg" 2>/dev/null \
+    | grep -i "content-type" | head -1)
 if echo "$ct" | grep -qi "multipart"; then
     pass "/stream.mjpg 返回 multipart"
+elif echo "$ct" | grep -qi "text/plain\|text/html"; then
+    fail "/stream.mjpg content-type 异常: $ct"
 else
-    fail "/stream.mjpg content-type 异常"
+    skip "/stream.mjpg 未出帧 (D435 未接 / encoder pending)"
 fi
 
 log "===================="

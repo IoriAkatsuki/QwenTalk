@@ -18,6 +18,7 @@ import argparse
 import asyncio
 import json
 import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import uvicorn
@@ -38,7 +39,6 @@ SSE_INTERVAL_S = 0.2  # 5 Hz 状态推送
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
-app = FastAPI(title="Intel 酱 — Embedded AI Companion")
 pipeline = GesturePipeline()
 perception = PerceptionFusion(pipeline, rate_hz=5)
 _ws_perception_clients: set[WebSocket] = set()
@@ -47,19 +47,22 @@ _ws_perception_clients: set[WebSocket] = set()
 _main_loop: asyncio.AbstractEventLoop | None = None
 
 
-@app.on_event("startup")
-async def _on_startup() -> None:
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """FastAPI lifespan: startup → yield → shutdown（替代 deprecated @on_event）。"""
     global _main_loop
     _main_loop = asyncio.get_running_loop()
     pipeline.start()
     perception.subscribe(_broadcast_perception_sync)
     perception.start()
+    try:
+        yield
+    finally:
+        perception.stop()
+        pipeline.stop()
 
 
-@app.on_event("shutdown")
-async def _on_shutdown() -> None:
-    perception.stop()
-    pipeline.stop()
+app = FastAPI(title="Intel 酱 — Embedded AI Companion", lifespan=_lifespan)
 
 
 def _broadcast_perception_sync(state) -> None:
