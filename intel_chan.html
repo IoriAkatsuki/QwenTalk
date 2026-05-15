@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#0a1428">
+<title>Intel 酱 — AI Companion</title>
+<style>
+  html, body { margin: 0; height: 100%; overscroll-behavior: none; touch-action: manipulation; }
+  body {
+    background: radial-gradient(ellipse at top, #0f1e3c 0%, #0a1428 60%);
+    color: #eef; font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+    overflow: hidden;
+  }
+  #stage { display: block; width: 100vw; height: 100vh; }
+  #panel {
+    position: fixed; top: max(12px, env(safe-area-inset-top));
+    left: max(12px, env(safe-area-inset-left));
+    background: rgba(10, 20, 40, 0.78); padding: 12px 14px;
+    border-radius: 10px; backdrop-filter: blur(10px);
+    border: 1px solid rgba(124, 224, 255, 0.18);
+    font-size: 12px; line-height: 1.5;
+    max-width: calc(100vw - 24px); min-width: 220px;
+  }
+  #panel h2 {
+    margin: 0 0 8px; font-size: 13px; color: #7df;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  #panel.collapsed .body { display: none; }
+  #status { font-family: monospace; font-size: 11px; margin: 6px 0; color: #afa; }
+  #status.bad { color: #f88; }
+  #status.ok { color: #5f5; }
+  #stats { font-family: monospace; font-size: 11px; color: #9bf; }
+  #chat {
+    position: fixed; bottom: max(12px, env(safe-area-inset-bottom));
+    left: 50%; transform: translateX(-50%);
+    width: min(720px, calc(100vw - 24px));
+    background: rgba(10, 20, 40, 0.85); padding: 10px;
+    border-radius: 12px; backdrop-filter: blur(10px);
+    border: 1px solid rgba(124, 224, 255, 0.18);
+  }
+  #messages {
+    max-height: 30vh; overflow-y: auto; margin-bottom: 8px;
+    font-size: 13px; line-height: 1.5;
+  }
+  .msg { padding: 6px 10px; margin: 4px 0; border-radius: 8px; word-wrap: break-word; }
+  .msg.user { background: rgba(100, 180, 255, 0.18); text-align: right; }
+  .msg.bot { background: rgba(180, 130, 255, 0.18); }
+  .row { display: flex; gap: 6px; }
+  #input {
+    flex: 1; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15);
+    color: #fff; padding: 8px 10px; border-radius: 8px; font-size: 14px;
+  }
+  button {
+    background: #2a4d8f; color: #fff; border: 0; padding: 8px 16px;
+    border-radius: 8px; font-size: 13px; cursor: pointer; touch-action: manipulation;
+  }
+  button:active { background: #3a6dcf; }
+  button:disabled { opacity: 0.5; }
+  @media (max-width: 600px) {
+    #panel { padding: 8px 10px; min-width: unset; width: calc(100vw - 24px); }
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+
+<div id="panel">
+  <h2>Intel 酱 <span class="toggle" id="toggle" style="cursor:pointer;color:#888;font-size:11px">▼</span></h2>
+  <div class="body">
+    <div id="status">连接中…</div>
+    <div id="stats">FPS: — | model: —</div>
+  </div>
+</div>
+
+<div id="chat">
+  <div id="messages"></div>
+  <div class="row">
+    <input id="input" type="text" placeholder="跟 Intel 酱说点什么…" autocomplete="off">
+    <button id="send">发送</button>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/pixi.js@6.5.10/dist/browser/pixi.min.js"></script>
+<script src="https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pixi-live2d-display@0.4.0/dist/cubism4.min.js"></script>
+
+<script>
+const MODELS = {
+  haru:    "https://cdn.jsdelivr.net/gh/guansss/pixi-live2d-display@master/test/assets/haru/haru_greeter_t03.model3.json",
+  shizuku: "https://cdn.jsdelivr.net/gh/guansss/pixi-live2d-display@master/test/assets/shizuku/shizuku.model.json",
+};
+const params = new URLSearchParams(location.search);
+const MODEL_URL = MODELS[params.get("m") || "haru"] || MODELS.haru;
+
+const statusEl = document.getElementById("status");
+const setStatus = (msg, kind) => {
+  statusEl.textContent = msg;
+  statusEl.className = kind || "";
+};
+
+const boost = (p) => 1 / (1 + Math.exp(-12 * (p - 0.20)));
+
+const appPromise = (async () => {
+  const app = new PIXI.Application({
+    view: document.getElementById("stage"),
+    width: window.innerWidth, height: window.innerHeight,
+    autoStart: true, backgroundAlpha: 0, antialias: true,
+  });
+  window.addEventListener("resize", () => {
+    app.renderer.resize(window.innerWidth, window.innerHeight);
+  });
+
+  setStatus("加载 Live2D 模型…");
+  const model = await PIXI.live2d.Live2DModel.from(MODEL_URL);
+  model.autoInteract = false;
+  const scale = Math.min(window.innerWidth / model.width, window.innerHeight / model.height) * 0.9;
+  model.scale.set(scale);
+  model.x = window.innerWidth / 2 - (model.width * scale) / 2;
+  model.y = window.innerHeight / 2 - (model.height * scale) / 2;
+  app.stage.addChild(model);
+  setStatus("模型就绪", "ok");
+
+  return { app, model, core: model.internalModel.coreModel };
+})();
+
+// ============== 平滑目标 ==============
+const target = {
+  eyeX: 0, eyeY: 0, angX: 0, angY: 0, angZ: 0,
+  smile: 0, mouthForm: 0, mouthOpen: 0,
+  browUp: 0, browAngry: 0, cheek: 0,
+};
+const smooth = {...target};
+
+// ============== Perception WS ==============
+let ws = null;
+const connectPerception = () => {
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  const url = `${proto}//${location.host}/ws/perception`;
+  ws = new WebSocket(url);
+  ws.onopen = () => setStatus("perception 已连接", "ok");
+  ws.onmessage = (ev) => handlePerception(JSON.parse(ev.data));
+  ws.onclose = () => { setStatus("断线，3s 重连…", "bad"); setTimeout(connectPerception, 3000); };
+  ws.onerror = () => setStatus("WS 错误", "bad");
+  setInterval(() => { if (ws && ws.readyState === 1) ws.send("ping"); }, 25000);
+};
+
+const handlePerception = (s) => {
+  const emo = (s.emotion && s.emotion.probs) || {};
+  const happy = boost(emo.happy || 0);
+  const sad = boost(emo.sad || 0);
+  const surprised = boost(emo.surprised || 0);
+  const angry = boost(emo.angry || 0);
+
+  target.smile = happy;
+  target.mouthForm = happy - sad;
+  target.mouthOpen = Math.max(surprised, happy * 0.4);
+  target.browUp = surprised - sad * 0.7;
+  target.browAngry = -angry;
+
+  if (s.gaze && s.gaze.screen_xy) {
+    const [gx, gy] = s.gaze.screen_xy;
+    target.eyeX = -((gx - 0.5) * 2);
+    target.eyeY = -((gy - 0.5) * 2);
+  }
+  if (s.face) {
+    target.angX = -(s.face.yaw_deg || 0) * 0.7;
+    target.angY = -(s.face.pitch_deg || 0) * 0.7;
+    target.angZ = -(s.face.roll_deg || 0) * 0.5;
+  }
+};
+
+// ============== Chat WS ==============
+let chatWs = null;
+const messagesEl = document.getElementById("messages");
+const inputEl = document.getElementById("input");
+const sendBtn = document.getElementById("send");
+
+const addMsg = (role, text) => {
+  const div = document.createElement("div");
+  div.className = `msg ${role}`;
+  div.textContent = text;
+  messagesEl.appendChild(div);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+  return div;
+};
+
+const connectChat = () => {
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  chatWs = new WebSocket(`${proto}//${location.host}/ws/chat`);
+  chatWs.onopen = () => sendBtn.disabled = false;
+  chatWs.onclose = () => { sendBtn.disabled = true; setTimeout(connectChat, 3000); };
+  let curBot = null;
+  chatWs.onmessage = (ev) => {
+    const m = JSON.parse(ev.data);
+    if (m.type === "sentence") {
+      if (!curBot) curBot = addMsg("bot", "");
+      curBot.textContent += m.text + " ";
+    } else if (m.type === "done") {
+      curBot = null;
+      sendBtn.disabled = false;
+    } else if (m.type === "error") {
+      addMsg("bot", `⚠ ${m.message}`);
+      sendBtn.disabled = false;
+    }
+  };
+};
+
+const sendChat = () => {
+  const txt = inputEl.value.trim();
+  if (!txt || !chatWs || chatWs.readyState !== 1) return;
+  addMsg("user", txt);
+  inputEl.value = "";
+  sendBtn.disabled = true;
+  chatWs.send(JSON.stringify({text: txt, thinking: "auto", max_tokens: 200}));
+};
+sendBtn.addEventListener("click", sendChat);
+inputEl.addEventListener("keydown", (e) => { if (e.key === "Enter") sendChat(); });
+
+// ============== render loop ==============
+appPromise.then(({app, model, core}) => {
+  const kPos = 0.30, kExpr = 0.25;
+  app.ticker.add(() => {
+    for (const key of Object.keys(target)) {
+      const k = (key === "eyeX" || key === "eyeY" || key.startsWith("ang")) ? kPos : kExpr;
+      smooth[key] += (target[key] - smooth[key]) * k;
+    }
+    const c = core;
+    c.setParameterValueById("ParamEyeBallX", smooth.eyeX);
+    c.setParameterValueById("ParamEyeBallY", smooth.eyeY);
+    c.setParameterValueById("ParamAngleX", smooth.angX);
+    c.setParameterValueById("ParamAngleY", smooth.angY);
+    c.setParameterValueById("ParamAngleZ", smooth.angZ);
+    c.setParameterValueById("ParamMouthOpenY", smooth.mouthOpen);
+    c.setParameterValueById("ParamMouthForm", smooth.mouthForm);
+    c.setParameterValueById("ParamEyeLSmile", smooth.smile);
+    c.setParameterValueById("ParamEyeRSmile", smooth.smile);
+    c.setParameterValueById("ParamBrowLY", smooth.browUp);
+    c.setParameterValueById("ParamBrowRY", smooth.browUp);
+    c.setParameterValueById("ParamBrowLForm", smooth.browAngry);
+    c.setParameterValueById("ParamBrowRForm", smooth.browAngry);
+    c.setParameterValueById("ParamCheek", smooth.cheek);
+  });
+
+  let lastT = performance.now(), frames = 0;
+  app.ticker.add(() => {
+    frames++;
+    const now = performance.now();
+    if (now - lastT >= 1000) {
+      const fps = (frames * 1000 / (now - lastT)).toFixed(0);
+      document.getElementById("stats").textContent =
+        `FPS: ${fps} | model: ${MODEL_URL.split("/").slice(-2,-1)[0]}`;
+      frames = 0; lastT = now;
+    }
+  });
+
+  connectPerception();
+  connectChat();
+});
+
+document.getElementById("toggle").addEventListener("click", () => {
+  document.getElementById("panel").classList.toggle("collapsed");
+});
+</script>
+</body>
+</html>
