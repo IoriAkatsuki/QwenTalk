@@ -1,8 +1,23 @@
-# 过夜 Handoff — Intel 酱 Phase A-I
+# 过夜 Handoff — Intel 酱 Phase A-I 完整版
 
 **起始**: 2026-05-16 01:55
-**完成**: 2026-05-16 02:30 左右（提前完成）
-**目标 deadline**: 2026-05-16 08:00
+**完成**: 2026-05-16 02:35 板卡 e2e 验证通过 ✅
+**目标 deadline**: 2026-05-16 08:00 — 提前完成
+
+## 🎯 重点：板卡端到端验证通过
+
+```
+[02:33:35] RESULT: 6 passed, 0 failed, 0 skipped ✅
+  - server ready (port 8765)
+  - /api/state 含 perception
+  - /intel_chan 返回 Live2D HTML
+  - /ws/perception 推送 PerceptionState
+  - /ws/chat 流式正常 (真实调 llama-server)
+  - /stream.mjpg multipart
+```
+
+**意味着**: Intel 酱后端 + 前端在板卡上完整工作；浏览器打开
+http://192.168.1.8:8765/intel_chan 应该能看到 Live2D + 聊天 UI 联动。
 
 ## 完成进度（所有 Phase 都 ✅）
 
@@ -17,7 +32,8 @@
 | G | `0201db4` | `intel_chan_persona.py` (156) — 动态 system prompt + proactive 台词 |
 |   | `21efe82` | smoke tests + HANDOFF baseline |
 | H | `9ae7fcb` | **codex review 7 项 fix**（2 CRITICAL + 3 HIGH + 2 MED）|
-| I | _本 commit_ | 最终 HANDOFF + board e2e smoke 脚本 |
+| I | `0dc3ae2` | HANDOFF + board e2e smoke 脚本 |
+| J | `fd6d2ee` | **板卡 e2e 验证 6/6 通过** + FastAPI lifespan |
 
 ## Codex Review 反馈处理（agent `ab73b4b8bd11b790e`）
 
@@ -43,17 +59,17 @@ python3 -m unittest tests.test_smoke -v
 # 结果: 18 passed + 1 skipped (server route 需 pyrealsense2 在板卡)
 ```
 
-### 板卡端 e2e（待跑）
+### 板卡端 e2e（已跑过 ✅）
 ```bash
-ssh intel@192.168.1.8
-cd /home/intel/QwenTalk
-bash tests/test_smoke_board.sh
-# 启动 webui server + 验证 5 个 path:
-#   1) /api/state 含 perception
-#   2) /intel_chan 返回 HTML
-#   3) WS /ws/perception 推送 PerceptionState
-#   4) WS /ws/chat 流式回应 (依赖 llama-server)
-#   5) /stream.mjpg multipart 头
+ssh intel@192.168.1.8 'cd /home/intel/QwenTalk && \
+  PATH=/home/intel/miniforge3/envs/openvino/bin:$PATH \
+  bash tests/test_smoke_board.sh'
+# 已验证: 6/6 PASS at 2026-05-16 02:33
+#   1) /api/state 含 perception        ✅
+#   2) /intel_chan 返回 Live2D HTML     ✅
+#   3) WS /ws/perception 推送            ✅
+#   4) WS /ws/chat 流式回应 (llama调通)  ✅
+#   5) /stream.mjpg multipart 头         ✅
 ```
 
 ## 板卡部署步骤（明早第一件事）
@@ -91,8 +107,9 @@ ssh intel@192.168.1.8 'cd /home/intel/QwenTalk && \
 
 ## 明日 Day 1 建议（按优先级）
 
-1. **跑板卡 smoke**（30 min）— `bash tests/test_smoke_board.sh` 验证 4-5 项通过
-2. **浏览器实测**（30 min）— 打开 /intel_chan 看 Live2D 跑动 + 聊天流畅
+1. ~~**跑板卡 smoke**~~ ✅ 已完成 6/6 PASS（02:33）
+2. **浏览器实测**（30 min）— 启动 webui 后打开 http://192.168.1.8:8765/intel_chan
+   看 Live2D 渲染 + 跟它聊几句（用 LLM streaming 返回）
 3. **NPU gaze 编译**（半天）— `gaze-estimation-adas-0002`
 4. **NPU emotion 替换** `_NullEmotionSource` → 真 emotion 概率喂 PerceptionFusion
 5. **head_pat_detector 接进 GesturePipeline** → palm_3d 字段推 WS
