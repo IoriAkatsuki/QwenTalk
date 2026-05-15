@@ -1,64 +1,113 @@
 # 过夜 Handoff — Intel 酱 Phase A-I
 
 **起始**: 2026-05-16 01:55
-**完成时间**: (TBD, target 08:00)
+**完成**: 2026-05-16 02:30 左右（提前完成）
+**目标 deadline**: 2026-05-16 08:00
 
-## 当前进度
-✅ Phase A: git baseline (`847ab4e`)
-✅ Phase B: PerceptionFusion 模块 (`f508594`)
-✅ Phase C: WebSocket /ws/perception + /ws/chat (`58e24c2`)
-✅ Phase D: intel_chan.html 前端 (`d2ff476`)
-✅ Phase E: 摸摸头 hit-test (`9b515d2`)
-✅ Phase F: event bus + trigger rules (`e12936f`)
-✅ Phase G: Intel 酱 persona (`0201db4`)
-🔄 Phase H: codex review + fix (in progress)
-⏳ Phase I: HANDOFF + project.md 进度刷新
+## 完成进度（所有 Phase 都 ✅）
 
-## 文件清单（本次新增）
-| 文件 | 行数 | 用途 |
+| Phase | commit | 内容 |
 |---|---|---|
-| `webui/perception_fusion.py` | 179 | 5Hz 融合 hand/emotion/gaze/face，订阅广播 |
-| `webui/server.py` | 247 | FastAPI + WS perception/chat（原 106 行扩展） |
-| `intel_chan.html` | 267 | Live2D + WS 前端，跨端兼容 |
-| `webui/head_pat_detector.py` | 148 | 摸摸头状态机 |
-| `webui/event_bus.py` | 172 | EventBus + Distance/Gaze/Silence 规则 |
-| `intel_chan_persona.py` | 156 | 动态 system prompt + proactive 台词 |
-| `OVERNIGHT_PLAN.md` | — | 本次过夜计划 |
+| A | `847ab4e` | git baseline — 把 36 个未追踪文件首次入库 |
+| B | `f508594` | `webui/perception_fusion.py` (179) — PerceptionFusion 融合 + 占位 NPU source |
+| C | `58e24c2` | `webui/server.py` (+155 行) — WS /ws/perception + /ws/chat |
+| D | `d2ff476` | `intel_chan.html` (267) — Live2D + WS client + 流式聊天 UI |
+| E | `9b515d2` | `webui/head_pat_detector.py` (148) — 摸摸头状态机 |
+| F | `e12936f` | `webui/event_bus.py` (172) — EventBus + 3 触发规则 |
+| G | `0201db4` | `intel_chan_persona.py` (156) — 动态 system prompt + proactive 台词 |
+|   | `21efe82` | smoke tests + HANDOFF baseline |
+| H | `9ae7fcb` | **codex review 7 项 fix**（2 CRITICAL + 3 HIGH + 2 MED）|
+| I | _本 commit_ | 最终 HANDOFF + board e2e smoke 脚本 |
 
-## 现状（还未跑通）
-本次过夜**完成了代码架构**，**未做实际部署测试**。下一步上板卡跑：
+## Codex Review 反馈处理（agent `ab73b4b8bd11b790e`）
 
-1. **scp webui/ + intel_chan.html + intel_chan_persona.py 到板卡**
-2. 板卡装 fastapi / uvicorn / websockets 依赖（openvino env 应该有）
-3. 启动 `python -m webui.server --host 0.0.0.0 --port 8000`
-4. 浏览器打开 `http://192.168.1.8:8000/intel_chan` 看 Live2D 渲染
-5. 看 `/ws/perception` 数据流（占位 source 都是默认值，模型不会动）
-6. 测 `/ws/chat` 是否能流式回（依赖板卡 llama-server 8080 在跑）
+**已 fix**：
+- ✅ **CRITICAL-1**: `asyncio.get_event_loop()` 在 perception 线程会抛 RuntimeError → 全局 `_main_loop` + `run_coroutine_threadsafe`
+- ✅ **HIGH-1**: `DistanceWakeRule` `distance<0.2` 误判 APPROACH → 直接 return + 回归测试
+- ✅ **HIGH-2**: `run_in_executor` 未 await → `asyncio.ensure_future` + 180s timeout
+- ✅ **HIGH-3**: `sys.path.insert` 每请求累加 → 移到 module 顶层 + 检查
+- ✅ **MED-1**: `SilenceRule` 启动 30s 必触发 → 加 `user_present` 参数 + 回归测试
+- ✅ **MED-2**: `_build_state` 无异常保护 → try/except 守住后台线程
+- ✅ **MED-3**: `target.cheek` 永为 0 → happy 推断 base + cheekPulse 衰减 + event 触发
 
-## 已知问题（待 codex review 确认）
-- `_broadcast_perception_sync` 用 `asyncio.get_event_loop()` 在非 asyncio 线程里 — **可能拿到错的 loop**，需要在 startup 时保存 loop 引用
-- `intel_chan.html` 假设 haru 模型有 `ParamCheek` — **待板卡验证**（haru 可能没这个参数，需要 fallback）
-- `_ws_perception_clients` 集合的并发安全 — handler 在 perception 线程里被调（同步），但 asyncio 端遍历可能 race
+**留待板卡验证**（codex 标 MED）：
+- ⚠️ `ParamCheek` 在 haru 模型是否存在（静默失败，不影响其他参数）
+- ⚠️ NPU emotion 真实概率分布 → 用真值 calibrate sigmoid 拐点 (0.20)
 
-## 重连测试快速命令
+## Smoke 测试
+
+### 本机（已跑过）
 ```bash
-# 在 oasis 本机
 cd /home/oasis/Documents/Intel/QwenTalk
-git log --oneline -10              # 看过夜 7 commits
-cat OVERNIGHT_PLAN.md              # 看原始计划
-cat HANDOFF.md                     # 这个文件
-
-# 看 codex review 结果（agent id ab73b4b8bd11b790e）
-# 在 claude 里 SendMessage(to='ab73b4b8bd11b790e', ...)
+python3 -m unittest tests.test_smoke -v
+# 结果: 18 passed + 1 skipped (server route 需 pyrealsense2 在板卡)
 ```
 
-## 明日 Day 1 建议
-1. **先部署测试**：把过夜代码 scp 板卡，跑通 WS 数据流，verify intel_chan.html 加载
-2. **NPU gaze 编译**：下载 gaze-estimation-adas-0002 → NPU 编译 → 替换 _NullGazeSource 实现
-3. **NPU emotion 接入**：替换 _NullEmotionSource → 真 emotions-recognition-retail-0003
-4. **head_pat_detector 接进 GesturePipeline**：每帧 update palm_xy + depth，触发 event
-5. **MeloTTS 集成**：装依赖进 openvino env，替换 espeak
+### 板卡端 e2e（待跑）
+```bash
+ssh intel@192.168.1.8
+cd /home/intel/QwenTalk
+bash tests/test_smoke_board.sh
+# 启动 webui server + 验证 5 个 path:
+#   1) /api/state 含 perception
+#   2) /intel_chan 返回 HTML
+#   3) WS /ws/perception 推送 PerceptionState
+#   4) WS /ws/chat 流式回应 (依赖 llama-server)
+#   5) /stream.mjpg multipart 头
+```
 
-## 重要时间戳
-- 03:00 左右 LLM 还在 server tmux 跑（不要停）
-- codex review agent 已 dispatch
+## 板卡部署步骤（明早第一件事）
+
+```bash
+# 1. 同步代码到板卡
+rsync -avz /home/oasis/Documents/Intel/QwenTalk/ intel@192.168.1.8:/home/intel/QwenTalk/
+
+# 2. 板卡上装 webui 缺的依赖（如有）
+ssh intel@192.168.1.8 '/home/intel/miniforge3/envs/openvino/bin/pip install fastapi uvicorn websockets'
+
+# 3. 跑 board smoke
+ssh intel@192.168.1.8 'cd /home/intel/QwenTalk && \
+    /home/intel/miniforge3/envs/openvino/bin/python -m webui.server --host 0.0.0.0 --port 8765 &
+    sleep 30 && bash tests/test_smoke_board.sh'
+
+# 4. 浏览器 (本机/手机) 打开
+#    http://192.168.1.8:8765/intel_chan
+```
+
+## 文件清单（本次新增）
+
+| 文件 | 行数 | 用途 |
+|---|---|---|
+| `OVERNIGHT_PLAN.md` | 41 | 计划 |
+| `webui/perception_fusion.py` | 181 | 5Hz 融合 + 异常保护 |
+| `webui/server.py` | 256 | WS /ws/perception + /ws/chat + loop 桥接 fix |
+| `webui/head_pat_detector.py` | 148 | 摸摸头状态机 |
+| `webui/event_bus.py` | 180 | EventBus + Distance/Gaze/Silence 规则 |
+| `intel_chan.html` | 287 | Live2D + WS + cheek 脉冲 |
+| `intel_chan_persona.py` | 156 | 动态 system prompt |
+| `tests/test_smoke.py` | 305 | 19 个 smoke test |
+| `tests/test_smoke_board.sh` | 152 | 板卡 e2e smoke |
+| `HANDOFF.md` | 本文件 | 交接 |
+
+## 明日 Day 1 建议（按优先级）
+
+1. **跑板卡 smoke**（30 min）— `bash tests/test_smoke_board.sh` 验证 4-5 项通过
+2. **浏览器实测**（30 min）— 打开 /intel_chan 看 Live2D 跑动 + 聊天流畅
+3. **NPU gaze 编译**（半天）— `gaze-estimation-adas-0002`
+4. **NPU emotion 替换** `_NullEmotionSource` → 真 emotion 概率喂 PerceptionFusion
+5. **head_pat_detector 接进 GesturePipeline** → palm_3d 字段推 WS
+6. **MeloTTS 集成** voice_pipeline → 替换 espeak
+7. **形象替换** AIGC + Cubism rig (比赛前 1 周做)
+
+## 重要时间戳 + 状态
+- 板卡 llama-server 8080 仍在 tmux llmsrv 跑（8.18 t/s baseline）— **不要停**
+- D435 未启动（本次过夜没动板卡硬件）
+- 本机 git branch beta，**领先 origin/beta 9 个 commit**（明早决定是否 push）
+
+## 重连命令
+```bash
+cd /home/oasis/Documents/Intel/QwenTalk
+git log --oneline -15            # 看 overnight 9 commits
+cat HANDOFF.md                   # 本文件
+python3 -m unittest tests.test_smoke -v   # 跑 smoke 验证仍 OK
+```
