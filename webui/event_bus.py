@@ -73,9 +73,13 @@ class DistanceWakeRule:
         self._state = _DistanceWakeState()
 
     def update(self, distance_m: float) -> None:
+        # HIGH-1 fix: 无效值（< 0.2 m 通常是 D435 返回 -1 / 太近遮挡）不当 APPROACH 处理；
+        # 当前状态保持，避免每帧误触发 user.approaching。
+        if distance_m < 0.2:
+            return
         now = time.time()
         prev = self._state.last_state
-        if 0.2 < distance_m < self.ACTIVE_M:
+        if distance_m < self.ACTIVE_M:
             if self._state.in_zone_since == 0.0:
                 self._state.in_zone_since = now
             if now - self._state.in_zone_since >= self.DWELL_S and prev != "ACTIVE":
@@ -143,7 +147,10 @@ class SilenceRule:
         self._state.last_user_input_ts = time.time()
         self._state.fired = False
 
-    def tick(self) -> None:
+    def tick(self, user_present: bool = True) -> None:
+        # MED-1 fix: 用户不在场时不触发 silent（避免对空气说"在想什么呢"）。
+        if not user_present:
+            return
         now = time.time()
         elapsed = now - self._state.last_user_input_ts
         if elapsed >= self.SILENCE_THRESHOLD_S and not self._state.fired:
@@ -163,10 +170,11 @@ class TriggerRules:
     def on_perception(self, state: Any) -> None:
         """订阅 PerceptionFusion 的回调入口。"""
         try:
+            user_present = bool(getattr(state, "user_present", False))
             self.distance.update(getattr(state, "distance_m", -1.0))
             gaze = getattr(state, "gaze", None)
             if gaze is not None:
                 self.gaze_away.update(bool(getattr(gaze, "on_screen", False)))
-            self.silence.tick()
+            self.silence.tick(user_present=user_present)
         except Exception:  # noqa: BLE001
             pass

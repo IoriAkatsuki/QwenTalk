@@ -146,7 +146,12 @@ class PerceptionFusion:
 
     def _run(self) -> None:
         while not self._stop.is_set():
-            state = self._build_state()
+            # MED-2 fix: 守住 _build_state — 任何 source 抛异常都不能杀死 perception 线程。
+            try:
+                state = self._build_state()
+            except Exception:  # noqa: BLE001
+                self._stop.wait(self._interval)
+                continue
             with self._lock:
                 self._latest = state
                 callbacks = list(self._subs)

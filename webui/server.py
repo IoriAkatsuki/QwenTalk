@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import sys
 from pathlib import Path
 
 import uvicorn
@@ -27,19 +28,29 @@ from .pipeline import GesturePipeline
 from .perception_fusion import PerceptionFusion
 
 STATIC_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = STATIC_DIR.parent
 INDEX_HTML = STATIC_DIR / "index.html"
-INTEL_CHAN_HTML = STATIC_DIR.parent / "intel_chan.html"
-LIVE2D_DEMO_HTML = STATIC_DIR.parent / "live2d_demo.html"
+INTEL_CHAN_HTML = PROJECT_DIR / "intel_chan.html"
+LIVE2D_DEMO_HTML = PROJECT_DIR / "live2d_demo.html"
 SSE_INTERVAL_S = 0.2  # 5 Hz 状态推送
+
+# 一次性把项目根加入 sys.path（避免每个请求重复 insert 污染累积，详见 codex review HIGH-3）
+if str(PROJECT_DIR) not in sys.path:
+    sys.path.insert(0, str(PROJECT_DIR))
 
 app = FastAPI(title="Intel 酱 — Embedded AI Companion")
 pipeline = GesturePipeline()
 perception = PerceptionFusion(pipeline, rate_hz=5)
 _ws_perception_clients: set[WebSocket] = set()
+# CRITICAL-1 fix: 在 startup 保存主 loop 引用；
+# perception 线程用它做 run_coroutine_threadsafe，避免 get_event_loop() 在非 asyncio 线程抛 RuntimeError。
+_main_loop: asyncio.AbstractEventLoop | None = None
 
 
 @app.on_event("startup")
 async def _on_startup() -> None:
+    global _main_loop
+    _main_loop = asyncio.get_running_loop()
     pipeline.start()
     perception.subscribe(_broadcast_perception_sync)
     perception.start()
@@ -52,13 +63,10 @@ async def _on_shutdown() -> None:
 
 
 def _broadcast_perception_sync(state) -> None:
-    """同步调用桥接 → 入 asyncio loop。"""
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
+    """同步调用桥接 → 入 asyncio loop（来自 perception 线程）。"""
+    if _main_loop is None or not _main_loop.is_running():
         return
-    if loop.is_running():
-        asyncio.run_coroutine_threadsafe(_broadcast_perception(state.to_dict()), loop)
+    asyncio.run_coroutine_threadsafe(_broadcast_perception(state.to_dict()), _main_loop)
 
 
 async def _broadcast_perception(payload: dict) -> None:
@@ -183,29 +191,21 @@ async def _stream_chat_to_ws(ws: WebSocket, req: dict) -> None:
         await ws.send_text(json.dumps({"type": "error", "message": "empty text"}))
         return
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     q: asyncio.Queue = asyncio.Queue()
-
-    def producer() -> None:
-        """同步 generator → asyncio.Queue (跑在 thread executor)。"""
-        from voice_pipeline import call_llm_stream  # noqa: E402
-        try:
-            for sentence, full_so_far in call_llm_stream(
-                text, system=system, max_tokens=max_tokens,
-                disable_thinking=disable_thinking,
-            ):
-                loop.call_soon_threadsafe(q.put_nowait, ("sentence", sentence, full_so_far))
-            loop.call_soon_threadsafe(q.put_nowait, ("done", None, None))
-        except Exception as e:  # noqa: BLE001
-            loop.call_soon_threadsafe(q.put_nowait, ("error", str(e), None))
-
-    import sys
-    sys.path.insert(0, str(STATIC_DIR.parent))
-    loop.run_in_executor(None, producer)
+    producer = _make_chat_producer(loop, q, text, system, max_tokens, disable_thinking)
+    # HIGH-2 fix: ensure_future + executor，任何未捕异常会 propagate 到 future，
+    # 由下面的 timeout 兜底防止 ws 永远挂起。
+    future = asyncio.ensure_future(loop.run_in_executor(None, producer))
 
     full = ""
     while True:
-        kind, payload, full_so_far = await q.get()
+        try:
+            kind, payload, full_so_far = await asyncio.wait_for(q.get(), timeout=180.0)
+        except asyncio.TimeoutError:
+            await ws.send_text(json.dumps({"type": "error", "message": "timeout"}))
+            future.cancel()
+            return
         if kind == "sentence":
             full = full_so_far or full
             await ws.send_text(json.dumps(
@@ -219,10 +219,26 @@ async def _stream_chat_to_ws(ws: WebSocket, req: dict) -> None:
             return
 
 
+def _make_chat_producer(loop, q, text, system, max_tokens, disable_thinking):
+    """构造跑在 executor 的 producer，捕异常成 error 帧入队不挂死消费端。"""
+    from voice_pipeline import call_llm_stream  # noqa: E402
+
+    def producer() -> None:
+        try:
+            for sentence, full_so_far in call_llm_stream(
+                text, system=system, max_tokens=max_tokens,
+                disable_thinking=disable_thinking,
+            ):
+                loop.call_soon_threadsafe(q.put_nowait, ("sentence", sentence, full_so_far))
+            loop.call_soon_threadsafe(q.put_nowait, ("done", None, None))
+        except Exception as e:  # noqa: BLE001 — 必须吞，否则消费端挂死
+            loop.call_soon_threadsafe(q.put_nowait, ("error", str(e), None))
+
+    return producer
+
+
 def _parse_chat_req(req: dict) -> tuple[str, str, int, object]:
     """从客户端请求提取 (text, system, max_tokens, disable_thinking)。"""
-    import sys
-    sys.path.insert(0, str(STATIC_DIR.parent))
     from voice_pipeline import detect_thinking_support  # noqa: E402
 
     text = str(req.get("text", "")).strip()

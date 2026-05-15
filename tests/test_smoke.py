@@ -136,6 +136,49 @@ class TestDistanceWakeRule(unittest.TestCase):
         rule.update(3.0)        # FAR (留下后)
         self.assertEqual(1, len(events), "ACTIVE → FAR 应触发 user.left")
 
+    def test_invalid_distance_ignored(self):
+        """HIGH-1 regression: distance < 0.2 不应误判 APPROACH。"""
+        from webui.event_bus import EventBus, DistanceWakeRule
+
+        bus = EventBus()
+        events = []
+        for et in ("user.approaching", "user.arrived", "user.left"):
+            bus.subscribe(et, lambda ev: events.append(ev))
+        rule = DistanceWakeRule(bus)
+
+        rule.update(-1.0)
+        rule.update(-1.0)
+        rule.update(0.0)
+        self.assertEqual(0, len(events), "无效距离不应触发任何 wake 事件")
+
+
+class TestSilenceRule(unittest.TestCase):
+    """4c. silence: 仅在 user_present=True 时 tick (MED-1)."""
+
+    def test_no_silent_when_absent(self):
+        from webui.event_bus import EventBus, SilenceRule
+
+        bus = EventBus()
+        events = []
+        bus.subscribe("user.silent", lambda ev: events.append(ev))
+        rule = SilenceRule(bus)
+        rule.SILENCE_THRESHOLD_S = 0.05
+        time.sleep(0.08)
+        rule.tick(user_present=False)
+        self.assertEqual(0, len(events))
+
+    def test_silent_when_present_after_threshold(self):
+        from webui.event_bus import EventBus, SilenceRule
+
+        bus = EventBus()
+        events = []
+        bus.subscribe("user.silent", lambda ev: events.append(ev))
+        rule = SilenceRule(bus)
+        rule.SILENCE_THRESHOLD_S = 0.05
+        time.sleep(0.08)
+        rule.tick(user_present=True)
+        self.assertEqual(1, len(events))
+
 
 class TestGazeAwayRule(unittest.TestCase):
     """4b. 凝视离开规则."""

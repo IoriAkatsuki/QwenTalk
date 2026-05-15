@@ -146,6 +146,10 @@ const connectPerception = () => {
   setInterval(() => { if (ws && ws.readyState === 1) ws.send("ping"); }, 25000);
 };
 
+// 摸摸头脉冲：被 WS event 推送触发时短期拉高 cheek，逐帧衰减
+let cheekPulse = 0;
+let cheekDecayPerSec = 0.5;  // 2s 衰到 0
+
 const handlePerception = (s) => {
   const emo = (s.emotion && s.emotion.probs) || {};
   const happy = boost(emo.happy || 0);
@@ -158,6 +162,9 @@ const handlePerception = (s) => {
   target.mouthOpen = Math.max(surprised, happy * 0.4);
   target.browUp = surprised - sad * 0.7;
   target.browAngry = -angry;
+  // MED-3 fix: cheek 从 happy 推断（base 红晕）+ 摸摸头事件叠加 pulse。
+  // 注意：haru 模型可能不含 ParamCheek，setParameterValueById 静默失败不影响别的参数。
+  target.cheek = Math.min(1, happy * 0.4 + cheekPulse);
 
   if (s.gaze && s.gaze.screen_xy) {
     const [gx, gy] = s.gaze.screen_xy;
@@ -168,6 +175,12 @@ const handlePerception = (s) => {
     target.angX = -(s.face.yaw_deg || 0) * 0.7;
     target.angY = -(s.face.pitch_deg || 0) * 0.7;
     target.angZ = -(s.face.roll_deg || 0) * 0.5;
+  }
+
+  // 接收 perception state 里可能附带的 event hint（后端 head_pat_detector → bus 注入）
+  if (s.event === "head.pat") {
+    cheekPulse = 1.0;
+    setStatus("被摸头了 (≧▽≦)", "ok");
   }
 };
 
@@ -221,7 +234,11 @@ inputEl.addEventListener("keydown", (e) => { if (e.key === "Enter") sendChat(); 
 // ============== render loop ==============
 appPromise.then(({app, model, core}) => {
   const kPos = 0.30, kExpr = 0.25;
-  app.ticker.add(() => {
+  app.ticker.add((deltaFrames) => {
+    // cheek pulse 时间衰减（与帧无关）
+    const dt = (deltaFrames || 1) / 60;
+    cheekPulse = Math.max(0, cheekPulse - cheekDecayPerSec * dt);
+
     for (const key of Object.keys(target)) {
       const k = (key === "eyeX" || key === "eyeY" || key.startsWith("ang")) ? kPos : kExpr;
       smooth[key] += (target[key] - smooth[key]) * k;
