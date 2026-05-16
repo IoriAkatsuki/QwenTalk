@@ -16,7 +16,12 @@ import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
-from .chat_handler import set_perception_provider, stream_chat_to_ws
+from .chat_handler import (
+    get_memory_store,
+    set_perception_provider,
+    set_session_id,
+    stream_chat_to_ws,
+)
 from .event_bus import EventBus, TriggerRules
 from .pipeline import GesturePipeline
 from .perception_fusion import PerceptionFusion
@@ -67,9 +72,12 @@ async def _lifespan(app: FastAPI):
     for evt in _BUS_FORWARD:
         event_bus.subscribe(evt, _forward_bus_to_perception)
     perception.start()
+    sid = get_memory_store().start_session()  # L1: 本进程会话
+    set_session_id(sid)
     try:
         yield
     finally:
+        get_memory_store().end_session(sid)
         perception.stop()
         pipeline.stop()
 

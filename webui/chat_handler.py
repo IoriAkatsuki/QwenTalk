@@ -12,10 +12,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 
 from fastapi import WebSocket
 
+from .memory import MemoryStore
+
 ROUND_TIMEOUT_S = 180.0
+# 板卡默认路径；本机/CI 覆盖用 env INTEL_CHAN_MEMORY_DB。
+_DEFAULT_DB = os.environ.get("INTEL_CHAN_MEMORY_DB",
+                             "/home/intel/QwenTalk/memory.db")
+_memory_store = MemoryStore(_DEFAULT_DB)
+# 当前 server 进程的 session_id（server.py lifespan 注入）。
+_current_session_id: int | None = None
+
 # perception 注入器：server.py lifespan 注册，让 system prompt 拿到当前感知状态。
 _perception_provider = None  # type: ignore[assignment]
 
@@ -24,6 +34,17 @@ def set_perception_provider(provider) -> None:
     """server.py 启动时注入 PerceptionFusion 实例。无注入则 system prompt 退化为纯时段感知。"""
     global _perception_provider
     _perception_provider = provider
+
+
+def set_session_id(sid: int | None) -> None:
+    """server.py lifespan 调：设置/清除当前会话 id（写 turns 时绑定）。"""
+    global _current_session_id
+    _current_session_id = sid
+
+
+def get_memory_store() -> MemoryStore:
+    """供 server.py lifespan / 测试访问全局 store。"""
+    return _memory_store
 
 
 def _default_system() -> str:
@@ -45,6 +66,12 @@ def _default_system() -> str:
                 ctx.emotion_label = getattr(emo, "label", None)
         except Exception:  # noqa: BLE001 — 拿不到就退化
             pass
+    # L2: 注入 persona facts 到 system prompt
+    try:
+        facts = _memory_store.get_persona_facts(top_n=5)
+        ctx.recent_memories = [f"{f['key']}: {f['value']}" for f in facts]
+    except Exception:  # noqa: BLE001 — DB 异常不阻塞对话
+        pass
     return build_system_prompt(ctx)
 
 
@@ -113,16 +140,62 @@ async def _dispatch(ws: WebSocket, kind: str, payload, full_so_far) -> tuple[str
     return ("", False)
 
 
+def _hydrate_history_from_l1(history: list) -> None:
+    """首次 receive 时：从 SQLite recall_recent_turns 预填 history（实现 L1 reconnect 恢复）。"""
+    if history:
+        return  # 同一 connection 已有上下文，不重填
+    try:
+        recent = _memory_store.recall_recent_turns(max_turns=6)
+    except Exception as e:  # noqa: BLE001
+        print(f"[L1] recall failed: {e}")
+        return
+    for t in recent:
+        history.append({"role": t["role"], "content": t["content"]})
+    if recent:
+        print(f"[L1] hydrated {len(recent)} turns from SQLite")
+
+
+def _persist_last_turn(history: list) -> None:
+    """terminal=True 时把本轮 user + assistant 写 SQLite。
+
+    error 路径下 history 可能只有 user（没 assistant 回复），仍持久化 user
+    以保留对话语境，下次 reconnect 能看到上轮提问。
+    """
+    if not history:
+        return
+    sid = _current_session_id
+    # 倒着找最近一对 user/assistant（跳过中间的 tool_call/tool）
+    last_assistant = None
+    last_user = None
+    for msg in reversed(history):
+        role = msg.get("role")
+        if last_assistant is None and role == "assistant" and msg.get("content"):
+            last_assistant = msg
+        elif last_user is None and role == "user":
+            last_user = msg
+            break
+    try:
+        if last_user is not None:
+            _memory_store.append_turn(sid, "user", last_user.get("content", ""))
+        if last_assistant is not None:
+            _memory_store.append_turn(sid, "assistant", last_assistant.get("content", ""))
+    except Exception as e:  # noqa: BLE001 — DB 故障不阻塞会话
+        print(f"[L1] persist failed: {e}")
+
+
 async def stream_chat_to_ws(ws: WebSocket, req: dict, history: list) -> None:
     """单次聊天请求：先 tool-detect → 必要时执行 tool → 流式回包给 WS。
 
     history: WS connection 持有的会话历史 list（L0 短期记忆）；
       chat_with_tools_stream 会 in-place append user/assistant/tool，供下一轮上下文。
+      首次 receive 时从 SQLite hydrate L1 跨 reconnect 历史。
     """
     text, system, max_tokens, disable_thinking = _parse_chat_req(req)
     if not text:
         await ws.send_text(json.dumps({"type": "error", "message": "empty text"}))
         return
+    # L1: connection 首次请求 — 从 SQLite 恢复上一段会话
+    _hydrate_history_from_l1(history)
     # L0 debug：每次请求打印 history 长度 + 入栈前 user msg
     print(f"[L0] before turn: history_len={len(history)} new_user={text[:40]!r}")
 
@@ -145,4 +218,5 @@ async def stream_chat_to_ws(ws: WebSocket, req: dict, history: list) -> None:
             full = new_full
         if terminal:
             print(f"[L0] after turn: history_len={len(history)} last_role={history[-1].get('role') if history else None}")
+            _persist_last_turn(history)
             return
