@@ -101,85 +101,82 @@ def _maybe_thinking_kwarg(disable_thinking: bool | None) -> dict:
     return {}
 
 
-DETECT_TOKEN_BUDGET = 32  # detect 阶段只需 1-32 token 就够判断 tool_call vs content
+def _accumulate_tool_call_delta(tool_calls_acc: list, tc_delta: dict) -> None:
+    """SSE 增量更新 tool_calls 数组（按 delta.tool_calls[i].index 索引）。"""
+    idx = tc_delta.get("index", 0)
+    while len(tool_calls_acc) <= idx:
+        tool_calls_acc.append({"function": {"arguments": ""}})
+    tc = tool_calls_acc[idx]
+    if "id" in tc_delta:
+        tc["id"] = tc_delta["id"]
+    if "type" in tc_delta:
+        tc["type"] = tc_delta["type"]
+    fn_delta = tc_delta.get("function") or {}
+    if "name" in fn_delta:
+        tc["function"]["name"] = fn_delta["name"]
+    if "arguments" in fn_delta:
+        tc["function"]["arguments"] += fn_delta["arguments"]
 
 
-def _detect_once(
+def _stream_one_round(
     messages: list, system: str | None, max_tokens: int,
     disable_thinking: bool | None,
-) -> dict:
-    """单轮 non-streaming detect；带 tools=auto 让模型自选 call 或答。
-
-    关键优化：max_tokens=DETECT_TOKEN_BUDGET，不让 detect 浪费 token 生成完整答案。
-    - 如果 tool_call：第 1 个 token 就是 special token，立即返回 finish_reason=tool_calls
-    - 如果 content：前几十字仅作为"模型决定回答"的信号，最终回答由 _stream_final_answer 重生成
-    """
-    msgs = ([{"role": "system", "content": system}] if system else []) + messages
-    payload = {
-        "messages": msgs,
-        "tools": TOOL_SCHEMAS,
-        "tool_choice": "auto",
-        "max_tokens": DETECT_TOKEN_BUDGET,
-        "temperature": 0.7,
-        "stream": False,
-        **_maybe_thinking_kwarg(disable_thinking),
-    }
-    # max_tokens 在外层（chat_with_tools_stream 传入）保留给 _stream_final_answer 使用
-    _ = max_tokens
-    r = requests.post(LLM_URL, json=payload, timeout=ROUND_TIMEOUT_S)
-    r.raise_for_status()
-    r.encoding = "utf-8"
-    return r.json()
-
-
-def _stream_final_answer(
-    messages: list, system: str | None, max_tokens: int,
-    disable_thinking: bool | None, fallback_content: str,
 ):
-    """检测到 tool_calls=空（模型要回答）时，用 streaming 重新 call 取真流式。
+    """G: streaming + tools 单轮 — 边读 SSE delta 边判 tool_call vs content。
 
-    KV cache 命中：prompt 部分 ~0 cost，只重做 generation。
-    不带 tools 字段防止模型又 tool_call（之前实测带 tool_choice=none 反而拖慢）。
-    若 streaming 失败/无输出，回退到 detect 时拿到的 fallback_content。
+    省掉 detect non-stream 整轮（之前 11s warm 首字 → 现在 ~2-5s 首字）。
+    Yields:
+      ('sentence', sent, content_full) — 流式句子
+      ('__final__', {finish_reason, tool_calls, content}, content) — 一轮终态
     """
     msgs = ([{"role": "system", "content": system}] if system else []) + messages
     payload = {
-        "messages": msgs,
-        "max_tokens": max_tokens,
-        "temperature": 0.7,
-        "stream": True,
+        "messages": msgs, "tools": TOOL_SCHEMAS, "tool_choice": "auto",
+        "max_tokens": max_tokens, "temperature": 0.7, "stream": True,
         **_maybe_thinking_kwarg(disable_thinking),
     }
-    full, buf, received = "", "", False
-    try:
-        for delta in _iter_sse_deltas(payload):
-            received = True
-            buf += delta
-            full += delta
-            while True:
-                m = SENTENCE_BREAK.search(buf)
-                if not m:
-                    break
-                end = m.end()
-                sent = buf[:end].strip()
-                buf = buf[end:]
-                if sent:
-                    yield ("sentence", sent, full)
-        if buf.strip():
-            yield ("sentence", buf.strip(), full)
-    except Exception as e:  # noqa: BLE001 — streaming 失败回退 non-stream content
-        full = fallback_content
-        received = bool(full.strip())
-        for sent in _split_sentences(full):
-            yield ("sentence", sent, full)
-        if not received:
-            yield ("error", f"streaming + fallback 都失败: {e}", None)
-            return
-    if not received or not full.strip():
-        for sent in _split_sentences(fallback_content):
-            yield ("sentence", sent, fallback_content)
-        full = fallback_content
-    yield ("done", None, full)
+    tool_calls_acc: list[dict] = []
+    content_full, content_buf = "", ""
+    finish_reason: str | None = None
+
+    with requests.post(LLM_URL, json=payload, stream=True, timeout=ROUND_TIMEOUT_S) as r:
+        r.raise_for_status()
+        r.encoding = "utf-8"
+        for line in r.iter_lines(decode_unicode=True):
+            if not line or not line.startswith("data: "):
+                continue
+            data = line[6:]
+            if data.strip() == "[DONE]":
+                break
+            try:
+                j = json.loads(data)
+                choice = j["choices"][0]
+                delta = choice.get("delta", {})
+                for tc_d in (delta.get("tool_calls") or []):
+                    _accumulate_tool_call_delta(tool_calls_acc, tc_d)
+                if delta.get("content"):
+                    content_full += delta["content"]
+                    content_buf += delta["content"]
+                    while True:
+                        m = SENTENCE_BREAK.search(content_buf)
+                        if not m:
+                            break
+                        end = m.end()
+                        sent = content_buf[:end].strip()
+                        content_buf = content_buf[end:]
+                        if sent:
+                            yield ("sentence", sent, content_full)
+                if choice.get("finish_reason"):
+                    finish_reason = choice["finish_reason"]
+            except (json.JSONDecodeError, KeyError, IndexError):
+                continue
+    if content_buf.strip():
+        yield ("sentence", content_buf.strip(), content_full)
+    yield ("__final__", {
+        "finish_reason": finish_reason,
+        "tool_calls": tool_calls_acc,
+        "content": content_full,
+    }, content_full)
 
 
 def _exec_tool(name: str, args_json: str) -> dict:
@@ -255,38 +252,34 @@ def chat_with_tools_stream(
     _trim_history(messages)
 
     for iteration in range(MAX_ITERATIONS):
+        final_info: dict | None = None
         try:
-            response = _detect_once(messages, system, max_tokens, disable_thinking)
+            for evt in _stream_one_round(messages, system, max_tokens, disable_thinking):
+                if evt[0] == "__final__":
+                    final_info = evt[1]
+                    break
+                yield evt  # passthrough sentence
         except requests.RequestException as e:
             yield ("error", f"iter {iteration + 1} failed: {e}", None)
             return
 
-        choice = response["choices"][0]
-        msg = choice["message"]
-        tool_calls = msg.get("tool_calls") or []
+        tool_calls = (final_info or {}).get("tool_calls") or []
+        content = (final_info or {}).get("content", "") or ""
+        finish = (final_info or {}).get("finish_reason")
 
-        if not tool_calls:
-            # 模型决定回答 → 用 streaming 二次 call 拿真流式体验。
-            # KV cache 命中：prompt 部分 0 cost，只有 generation 是新成本。
-            final_text = ""
-            for evt in _stream_final_answer(
-                messages, system, max_tokens, disable_thinking,
-                fallback_content=msg.get("content") or "",
-            ):
-                if evt[0] == "done":
-                    final_text = evt[2] or final_text
-                yield evt
-            # L0 history: 把 assistant 最终回答写回 messages，供下一轮上下文
-            if final_text.strip():
-                messages.append({"role": "assistant", "content": final_text})
-            return
+        if finish == "tool_calls" and tool_calls:
+            messages.append({
+                "role": "assistant", "content": content,
+                "tool_calls": tool_calls,
+            })
+            yield from _yield_tool_calls(tool_calls, messages)
+            continue
 
-        # 有 tool_call → append assistant + 执行 tools → 进入下一轮
-        messages.append({
-            "role": "assistant", "content": msg.get("content") or "",
-            "tool_calls": tool_calls,
-        })
-        yield from _yield_tool_calls(tool_calls, messages)
+        # content 模式：sentence 已经流式 yield 过；写回 history + done
+        if content.strip():
+            messages.append({"role": "assistant", "content": content})
+        yield ("done", None, content)
+        return
 
     # MAX_ITERATIONS 耗尽仍未自然回答 — fail loud
     last_tool = next((m.get("name", "工具") for m in reversed(messages) if m.get("role") == "tool"), "工具")
