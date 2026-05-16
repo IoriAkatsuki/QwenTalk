@@ -387,6 +387,47 @@ class TestExternalTools:
             result = tool_impls.get_weather(city="Beijing")
         assert "error" in result
 
+    def test_web_search_parses_mock_html(self):
+        """mock urlopen 返回固定 HTML，验证 happy-path parsing 不漂移（M4）。"""
+        from unittest.mock import MagicMock
+        from webui import tool_impls
+        mock_html = (
+            '<html><body><li class="b_algo">'
+            '<h2><a href="x">Python 官网</a></h2>'
+            '<p>Python is a programming language</p></li>'
+            '<li class="b_algo"><h2>Real Python</h2>'
+            '<p>tutorials and articles</p></li></body></html>'
+        ).encode("utf-8")
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = mock_html
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            result = tool_impls.web_search("python", max_results=2)
+        assert "results" in result
+        assert 2 == len(result["results"])
+        assert "Python" in result["results"][0]["title"]
+        assert "cn.bing.com" == result["source"]
+
+    def test_get_weather_parses_mock_json(self):
+        """mock wttr.in 返回固定 JSON，验证 happy-path parsing 不漂移（M4）。"""
+        from unittest.mock import MagicMock
+        from webui import tool_impls
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {
+            "current_condition": [{
+                "temp_C": "20", "FeelsLikeC": "18",
+                "weatherDesc": [{"value": "Sunny"}],
+                "humidity": "60", "windspeedKmph": "5",
+            }]
+        }
+        with patch("requests.get", return_value=mock_resp):
+            result = tool_impls.get_weather(city="Beijing")
+        assert "Beijing" == result["city"]
+        assert "20" == result["temp_c"]
+        assert "Sunny" == result["desc"]
+        assert "60" == result["humidity_pct"]
+        assert "wttr.in" == result["source"]
+
 
 # ---------------------------------------------------------------------------
 # 3. Memory L1 / L2 跨"会话"
