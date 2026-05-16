@@ -150,6 +150,28 @@ const connectPerception = () => {
 let cheekPulse = 0;
 let cheekDecayPerSec = 0.5;  // 2s 衰到 0
 
+// lipsync / 眨眼 / 呼吸 / 唤醒 状态 — 由 render loop 消费
+let lipsyncActive = false;       // TTS 播音中：嘴部振荡驱动
+let lipsyncStartT = 0;
+let nextBlinkT = performance.now() + 2000 + Math.random() * 3000;  // 下次自动眨眼时刻
+let blinkPhase = 0;              // 0=未眨；>0=正在眨眼 (s)
+let userPresent = true;          // perception 推送的 user_present；缺失时按 true
+let distanceM = -1;              // 用户距离（米），<0 表示未知
+
+// 监听浏览器 TTS 播音边界 — speak handler 在 line 185-198，这里挂全局 hook 不重叠
+if ("speechSynthesis" in window) {
+  try {
+    const _origSpeak = speechSynthesis.speak.bind(speechSynthesis);
+    speechSynthesis.speak = (u) => {
+      // 给传入的 utterance 挂 start/end 钩子驱动 lipsync 标志
+      u.addEventListener("start", () => { lipsyncActive = true; lipsyncStartT = performance.now(); });
+      u.addEventListener("end",   () => { lipsyncActive = false; });
+      u.addEventListener("error", () => { lipsyncActive = false; });
+      return _origSpeak(u);
+    };
+  } catch (e) { /* 静默：lipsync 不可用不影响主流程 */ }
+}
+
 const handlePerception = (s) => {
   const emo = (s.emotion && s.emotion.probs) || {};
   const happy = boost(emo.happy || 0);
@@ -177,10 +199,28 @@ const handlePerception = (s) => {
     target.angZ = -(s.face.roll_deg || 0) * 0.5;
   }
 
+  // 距离唤醒：user_present / distance_m 喂给 render loop 做 "睡着/凑近" 视觉
+  if (typeof s.user_present === "boolean") userPresent = s.user_present;
+  if (typeof s.distance_m === "number") distanceM = s.distance_m;
+
   // 接收 perception state 里可能附带的 event hint（后端 head_pat_detector → bus 注入）
   if (s.event === "head.pat") {
     cheekPulse = 1.0;
     setStatus("被摸头了 (≧▽≦)", "ok");
+  }
+
+  // speak:|<text> — LLM 调 speak() tool 时浏览器 TTS 播音
+  if (typeof s.event === "string" && s.event.startsWith("speak:|")) {
+    const text = s.event.slice(7).trim();
+    if (text && "speechSynthesis" in window) {
+      try {
+        speechSynthesis.cancel();  // 打断上一句 speak（不影响 sentence 流）
+        const u = new SpeechSynthesisUtterance(text);
+        u.lang = "zh-CN";
+        u.rate = 1.1;
+        speechSynthesis.speak(u);
+      } catch (e) { /* TTS 不可用静默 */ }
+    }
   }
 };
 
@@ -259,21 +299,51 @@ appPromise.then(({app, model, core}) => {
       const k = (key === "eyeX" || key === "eyeY" || key.startsWith("ang")) ? kPos : kExpr;
       smooth[key] += (target[key] - smooth[key]) * k;
     }
+    // 用户不在场时整体表情衰减（"睡着" 视觉），凑近 (<0.8m) 时角度微倾 ("好奇")
+    const presentGain = userPresent ? 1.0 : 0.3;
+    const curiosity = (userPresent && distanceM > 0 && distanceM < 0.8) ? 3 : 0;
+
+    // TTS lipsync：播音中用快速振荡覆盖嘴开度，自然 "在说话"
+    const nowMs = performance.now();
+    let mouthOut = smooth.mouthOpen * presentGain;
+    if (lipsyncActive) {
+      const t = (nowMs - lipsyncStartT) / 1000;
+      // 6Hz 主频 + 11Hz 副谐波，构造非机械嘴形
+      const osc = 0.5 + 0.35 * Math.sin(t * 12.0) + 0.15 * Math.sin(t * 22.0 + 1.3);
+      mouthOut = Math.max(0, Math.min(1, osc));
+    }
+
+    // 自然眨眼：每 2-5s 触发一次，0.3s 内做 V 形 闭→开（线性 |p-0.5|*2）
+    let eyeOpen = userPresent ? 1.0 : 0.15;  // 不在场半闭眼
+    if (nowMs >= nextBlinkT && blinkPhase === 0) blinkPhase = 0.001;
+    if (blinkPhase > 0) {
+      blinkPhase += dt;
+      const p = Math.min(1, blinkPhase / 0.3);
+      if (userPresent) eyeOpen = Math.abs(p - 0.5) * 2;
+      if (blinkPhase >= 0.3) { blinkPhase = 0; nextBlinkT = nowMs + 2000 + Math.random() * 3000; }
+    }
+
+    // 呼吸：低频正弦驱动 ParamBreath（不存在静默失败）
+    const breath = 0.5 + 0.5 * Math.sin(nowMs / 1000 * 2 * Math.PI / 3.5);  // 3.5s/周期
+
     const c = core;
     c.setParameterValueById("ParamEyeBallX", smooth.eyeX);
     c.setParameterValueById("ParamEyeBallY", smooth.eyeY);
-    c.setParameterValueById("ParamAngleX", smooth.angX);
+    c.setParameterValueById("ParamAngleX", smooth.angX + curiosity);
     c.setParameterValueById("ParamAngleY", smooth.angY);
     c.setParameterValueById("ParamAngleZ", smooth.angZ);
-    c.setParameterValueById("ParamMouthOpenY", smooth.mouthOpen);
-    c.setParameterValueById("ParamMouthForm", smooth.mouthForm);
-    c.setParameterValueById("ParamEyeLSmile", smooth.smile);
-    c.setParameterValueById("ParamEyeRSmile", smooth.smile);
-    c.setParameterValueById("ParamBrowLY", smooth.browUp);
-    c.setParameterValueById("ParamBrowRY", smooth.browUp);
-    c.setParameterValueById("ParamBrowLForm", smooth.browAngry);
-    c.setParameterValueById("ParamBrowRForm", smooth.browAngry);
+    c.setParameterValueById("ParamMouthOpenY", mouthOut);
+    c.setParameterValueById("ParamMouthForm", smooth.mouthForm * presentGain);
+    c.setParameterValueById("ParamEyeLSmile", smooth.smile * presentGain);
+    c.setParameterValueById("ParamEyeRSmile", smooth.smile * presentGain);
+    c.setParameterValueById("ParamEyeLOpen", eyeOpen);
+    c.setParameterValueById("ParamEyeROpen", eyeOpen);
+    c.setParameterValueById("ParamBrowLY", smooth.browUp * presentGain);
+    c.setParameterValueById("ParamBrowRY", smooth.browUp * presentGain);
+    c.setParameterValueById("ParamBrowLForm", smooth.browAngry * presentGain);
+    c.setParameterValueById("ParamBrowRForm", smooth.browAngry * presentGain);
     c.setParameterValueById("ParamCheek", smooth.cheek);
+    c.setParameterValueById("ParamBreath", breath);
   });
 
   let lastT = performance.now(), frames = 0;
