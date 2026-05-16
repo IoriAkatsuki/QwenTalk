@@ -59,10 +59,11 @@ def _parse_chat_req(req: dict) -> tuple[str, str, int, object]:
     return text, system, max_tokens, disable_thinking
 
 
-def _make_chat_producer(loop, q, text, system, max_tokens, disable_thinking):
+def _make_chat_producer(loop, q, text, system, max_tokens, disable_thinking, history):
     """构造跑在 executor 的 producer — 转发 chat_with_tools_stream 全部事件。
 
     chat_tools yields (kind, payload, full_so_far) 直接入队，由消费端按 kind 分发。
+    history: WS 级会话历史；in-place append by chat_with_tools_stream。
     捕异常成 error 帧避免消费端挂死。
     """
     from .chat_tools import chat_with_tools_stream
@@ -71,7 +72,7 @@ def _make_chat_producer(loop, q, text, system, max_tokens, disable_thinking):
         try:
             for evt in chat_with_tools_stream(
                 text, system=system, max_tokens=max_tokens,
-                disable_thinking=disable_thinking,
+                disable_thinking=disable_thinking, history=history,
             ):
                 loop.call_soon_threadsafe(q.put_nowait, evt)
         except Exception as e:  # noqa: BLE001 — 吞所有，否则消费端挂死
@@ -112,16 +113,22 @@ async def _dispatch(ws: WebSocket, kind: str, payload, full_so_far) -> tuple[str
     return ("", False)
 
 
-async def stream_chat_to_ws(ws: WebSocket, req: dict) -> None:
-    """单次聊天请求：先 tool-detect → 必要时执行 tool → 流式回包给 WS。"""
+async def stream_chat_to_ws(ws: WebSocket, req: dict, history: list) -> None:
+    """单次聊天请求：先 tool-detect → 必要时执行 tool → 流式回包给 WS。
+
+    history: WS connection 持有的会话历史 list（L0 短期记忆）；
+      chat_with_tools_stream 会 in-place append user/assistant/tool，供下一轮上下文。
+    """
     text, system, max_tokens, disable_thinking = _parse_chat_req(req)
     if not text:
         await ws.send_text(json.dumps({"type": "error", "message": "empty text"}))
         return
+    # L0 debug：每次请求打印 history 长度 + 入栈前 user msg
+    print(f"[L0] before turn: history_len={len(history)} new_user={text[:40]!r}")
 
     loop = asyncio.get_running_loop()
     q: asyncio.Queue = asyncio.Queue()
-    producer = _make_chat_producer(loop, q, text, system, max_tokens, disable_thinking)
+    producer = _make_chat_producer(loop, q, text, system, max_tokens, disable_thinking, history)
     future = asyncio.ensure_future(loop.run_in_executor(None, producer))
 
     full = ""
@@ -137,4 +144,5 @@ async def stream_chat_to_ws(ws: WebSocket, req: dict) -> None:
         if new_full:
             full = new_full
         if terminal:
+            print(f"[L0] after turn: history_len={len(history)} last_role={history[-1].get('role') if history else None}")
             return

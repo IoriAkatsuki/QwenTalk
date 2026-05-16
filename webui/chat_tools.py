@@ -1,16 +1,10 @@
-"""LLM tool calling for /ws/chat — Qwen3.6 + llama.cpp 原生 ReAct loop。
+"""LLM tool calling for /ws/chat — Qwen3.6 + llama.cpp ReAct loop。
 
-流程（multi-step agent loop）:
-  for iter in range(MAX_ITERATIONS):
-    1. detect: non-stream chat completion with tools=auto
-    2. 若 finish_reason=tool_calls → 执行每个 tool → append messages → 继续
-    3. 若 finish_reason=stop → 切句 yield content + done → 返回
-    4. 超过 MAX_ITERATIONS → error 提示
-
-调用:
-    chat_with_tools_stream(prompt, system, max_tokens, disable_thinking)
-        → yields (kind, payload, full_so_far)
-          kind ∈ {"tool_call","tool_result","sentence","done","error"}
+chat_with_tools_stream(prompt, system, max_tokens, disable_thinking, history)
+  → yields (kind, payload, full_so_far)
+    kind ∈ {tool_call, tool_result, sentence, done, error}
+流程: detect (tools=auto) → 若 tool_calls 执行 → 再 detect；MAX_ITERATIONS 防死循环。
+history: list | None — WS connection 级会话历史；in-place append。
 """
 from __future__ import annotations
 
@@ -34,6 +28,8 @@ WTTR_TIMEOUT_S = 8.0
 BING_TIMEOUT_S = 8.0
 BING_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
 MAX_ITERATIONS = 4  # ReAct loop 硬上限：模型 tool_call 最多 4 次防死循环
+HISTORY_MAX_CHARS = 2500  # L0 history 截窗阈值（≈ 1000-2500 tokens，给 Qwen3.6 4096 留 buffer）
+HISTORY_KEEP_TAIL = 6  # 截窗时保留最近 K 条 + 当前 user
 
 
 def web_search(query: str, max_results: int = 3) -> dict:
@@ -91,16 +87,10 @@ def get_weather(city: str = "Beijing") -> dict:
         return {"error": f"wttr.in 失败: {type(e).__name__}: {e}"}
 
 
-TOOLS = {
-    "web_search": web_search,
-    "get_weather": get_weather,
-    "get_temperature": get_temperature,
-    "get_system_info": get_system_info,
-}
-
+TOOLS = {"web_search": web_search, "get_weather": get_weather,
+         "get_temperature": get_temperature, "get_system_info": get_system_info}
 _SCHEMA_BY_NAME = {s["function"]["name"]: s for s in _ALL_SCHEMAS}
-TOOL_SCHEMAS = [_SCHEMA_BY_NAME[name] for name in TOOLS.keys()
-                if name in _SCHEMA_BY_NAME]
+TOOL_SCHEMAS = [_SCHEMA_BY_NAME[name] for name in TOOLS if name in _SCHEMA_BY_NAME]
 _missing = [n for n in TOOLS if n not in _SCHEMA_BY_NAME]
 assert not _missing, f"tool_schemas.py 缺 schema: {_missing}"
 
@@ -239,16 +229,30 @@ def _yield_tool_calls(tool_calls: list, messages: list):
         })
 
 
+def _trim_history(messages: list, max_chars: int = HISTORY_MAX_CHARS) -> None:
+    """L0 history 截窗：in-place 丢老消息，保留末尾 K 条 + 末尾 user。system 由外层注入不受影响。"""
+    size = lambda: sum(len(str(m.get("content") or "")) for m in messages)  # noqa: E731
+    if size() <= max_chars:
+        return
+    if len(messages) > HISTORY_KEEP_TAIL:
+        del messages[: len(messages) - HISTORY_KEEP_TAIL]
+    while size() > max_chars and len(messages) > 1:
+        messages.pop(0)
+
+
 def chat_with_tools_stream(
     prompt: str, system: str | None = None,
     max_tokens: int = 500, disable_thinking: bool | None = None,
+    history: list | None = None,
 ) -> Generator:
     """ReAct loop: detect → tool_call → exec → re-detect → ... → final answer。
 
-    最多 MAX_ITERATIONS 轮；模型每轮自决"再 call 还是回答"。
-    超出上限触发 fail-loud（"我尝试多次也找不到合适答案"）。
+    history: 外部维护的会话历史 list（不含 system；仅 user/assistant/tool）。
+      None → single-shot；传 list → in-place append user/assistant/tool_result 供 caller 复用。
     """
-    messages: list = [{"role": "user", "content": prompt}]
+    messages: list = history if history is not None else []
+    messages.append({"role": "user", "content": prompt})
+    _trim_history(messages)
 
     for iteration in range(MAX_ITERATIONS):
         try:
@@ -264,10 +268,17 @@ def chat_with_tools_stream(
         if not tool_calls:
             # 模型决定回答 → 用 streaming 二次 call 拿真流式体验。
             # KV cache 命中：prompt 部分 0 cost，只有 generation 是新成本。
-            yield from _stream_final_answer(
+            final_text = ""
+            for evt in _stream_final_answer(
                 messages, system, max_tokens, disable_thinking,
                 fallback_content=msg.get("content") or "",
-            )
+            ):
+                if evt[0] == "done":
+                    final_text = evt[2] or final_text
+                yield evt
+            # L0 history: 把 assistant 最终回答写回 messages，供下一轮上下文
+            if final_text.strip():
+                messages.append({"role": "assistant", "content": final_text})
             return
 
         # 有 tool_call → append assistant + 执行 tools → 进入下一轮
@@ -278,17 +289,8 @@ def chat_with_tools_stream(
         yield from _yield_tool_calls(tool_calls, messages)
 
     # MAX_ITERATIONS 耗尽仍未自然回答 — fail loud
-    last_tool = _last_tool_name(messages)
-    msg = (
-        f"我尝试调用了 {MAX_ITERATIONS} 次工具（最后一次 {last_tool}）"
-        f"但仍没能找到合适的答案，请换个问法或稍后再试。"
-    )
+    last_tool = next((m.get("name", "工具") for m in reversed(messages) if m.get("role") == "tool"), "工具")
+    msg = (f"我尝试调用了 {MAX_ITERATIONS} 次工具（最后一次 {last_tool}）"
+           f"但仍没能找到合适的答案，请换个问法或稍后再试。")
     yield ("sentence", msg, msg)
     yield ("done", None, msg)
-
-
-def _last_tool_name(messages: list) -> str:
-    for m in reversed(messages):
-        if m.get("role") == "tool":
-            return m.get("name", "工具")
-    return "工具"

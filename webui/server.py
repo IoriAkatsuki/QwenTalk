@@ -55,10 +55,15 @@ async def _lifespan(app: FastAPI):
     """FastAPI lifespan: startup → yield → shutdown（替代 deprecated @on_event）。"""
     global _main_loop
     _main_loop = asyncio.get_running_loop()
-    pipeline.start()
+    # D435/NPU 是可选硬件：缺失时进入 degraded（chat/LLM 不依赖视觉），
+    # /api/health 仍报 init_error 让前端可见；webui 不静默瘫痪。
+    try:
+        pipeline.start(init_timeout=10.0)
+    except Exception as e:  # noqa: BLE001 — degraded mode 兜底
+        print(f"[WARN] pipeline degraded (D435/NPU?): {e}")
     set_perception_provider(perception)
     perception.subscribe(_broadcast_perception_sync)
-    perception.subscribe(trigger_rules.on_perception)  # event_bus 接入
+    perception.subscribe(trigger_rules.on_perception)
     for evt in _BUS_FORWARD:
         event_bus.subscribe(evt, _forward_bus_to_perception)
     perception.start()
@@ -174,12 +179,15 @@ async def ws_chat(ws: WebSocket) -> None:
 
     Protocol: {text, system?, max_tokens?, thinking?}
       → {type: sentence|tool_call|tool_result|done|error, ...}
+    L0 会话历史：connection 级 history list 跨多轮 receive 复用，
+    断连即清空（前端 reload 后服务端无状态）。
     """
     await ws.accept()
+    history: list = []
     try:
         while True:
             req = json.loads(await ws.receive_text())
-            await stream_chat_to_ws(ws, req)
+            await stream_chat_to_ws(ws, req, history)
     except WebSocketDisconnect:
         return
     except Exception as e:  # noqa: BLE001

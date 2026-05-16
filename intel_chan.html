@@ -184,12 +184,15 @@ const handlePerception = (s) => {
   }
 };
 
-// ============== Chat WS ==============
-let chatWs = null;
-const messagesEl = document.getElementById("messages");
-const inputEl = document.getElementById("input");
-const sendBtn = document.getElementById("send");
-
+// ============== Chat WS + motion 触发 (idx 1=happy/m07, 2=think/m15) ==============
+let chatWs = null, modelRef = null, lastMotionT = 0;
+const messagesEl = document.getElementById("messages"), inputEl = document.getElementById("input"), sendBtn = document.getElementById("send");
+const EMO_KW = { 1: ["好的","可以","没问题","开心","真棒","帮你","很高兴","哈哈","太好了"], 2: ["嗯","呃","这个","我想","可能","也许","不确定","想想","或许","唔"] }, detectEmotion = (t) => { for (const i of [1,2]) if (EMO_KW[i].some(k => t.includes(k))) return i; return 0; };
+const triggerMotion = (idx) => {
+  const now = performance.now(); if (!idx || !modelRef || now - lastMotionT < 5000) return;
+  const mgr = modelRef.internalModel.motionManager, grp = Object.keys(mgr.definitions || mgr._motionGroups || mgr.settings?.motions || {})[0];
+  if (grp) try { modelRef.motion(grp, idx); lastMotionT = now; } catch (e) {}
+};
 const addMsg = (role, text) => {
   const div = document.createElement("div");
   div.className = `msg ${role}`;
@@ -212,6 +215,7 @@ const connectChat = () => {
       clearToolHint();
       if (!curBot) curBot = addMsg("bot", "");
       curBot.textContent += m.text + " ";
+      triggerMotion(detectEmotion(m.text));
     } else if (m.type === "tool_call") {
       const q = (() => { try { return JSON.parse(m.arguments).query || ""; } catch { return ""; } })();
       const label = m.name === "web_search" ? `🔎 查资料中: ${q}` : `🛠 调用 ${m.name}`;
@@ -243,6 +247,8 @@ inputEl.addEventListener("keydown", (e) => { if (e.key === "Enter") sendChat(); 
 
 // ============== render loop ==============
 appPromise.then(({app, model, core}) => {
+  modelRef = model;
+  { const _m = model.internalModel.motionManager; console.log("motion groups:", Object.keys(_m.definitions || _m._motionGroups || _m.settings?.motions || {})); }
   const kPos = 0.30, kExpr = 0.25;
   app.ticker.add((deltaFrames) => {
     // cheek pulse 时间衰减（与帧无关）
