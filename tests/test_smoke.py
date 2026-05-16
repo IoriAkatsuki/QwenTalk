@@ -314,5 +314,55 @@ class TestServerImports(unittest.TestCase):
             self.assertIn(expected, paths, f"missing route {expected}")
 
 
+class TestPipelineInitFailure(unittest.TestCase):
+    """Codex follow-up: 验证 GesturePipeline init 失败能正确传播给 start()。
+
+    需要 mock ensure_d435 抛异常，验证 start() re-raise，
+    而不是默默 daemon thread 死亡 + 主线程残态启动。
+    """
+
+    @unittest.skipUnless(_has_realsense(), "pyrealsense2 not installed (run on board)")
+    def test_init_error_propagates_via_start(self):
+        """Mock ensure_d435 抛 RuntimeError → start() 应 re-raise，不沉默。"""
+        from unittest.mock import patch
+        # 重要：在 webui.pipeline 命名空间里 patch，因为它 import as
+        with patch("webui.pipeline.ensure_d435", side_effect=RuntimeError("D435 not found")):
+            from webui.pipeline import GesturePipeline
+            p = GesturePipeline()
+            with self.assertRaises(RuntimeError) as cm:
+                p.start(init_timeout=5.0)
+            self.assertIn("D435 not found", str(cm.exception))
+
+    @unittest.skipUnless(_has_realsense(), "pyrealsense2 not installed (run on board)")
+    def test_health_status_reports_init_error(self):
+        """init 失败后 health_status() 应明确报告 init_error。"""
+        from unittest.mock import patch
+        with patch("webui.pipeline.ensure_d435", side_effect=RuntimeError("hw fail")):
+            from webui.pipeline import GesturePipeline
+            p = GesturePipeline()
+            try:
+                p.start(init_timeout=5.0)
+            except RuntimeError:
+                pass
+            h = p.health_status()
+            self.assertFalse(h["ready"])
+            self.assertIsNotNone(h["init_error"])
+            self.assertIn("hw fail", h["init_error"])
+
+    def test_pipeline_has_health_status_method(self):
+        """API contract: GesturePipeline 必须 expose health_status() method。"""
+        # 这个不需要 D435 也能验
+        if not _has_realsense():
+            # 即使没 pyrealsense2 也能验 attr 存在（如果 module import 成功）
+            try:
+                from webui.pipeline import GesturePipeline
+                self.assertTrue(hasattr(GesturePipeline, "health_status"))
+            except ImportError:
+                self.skipTest("webui.pipeline import 失败")
+            return
+        from webui.pipeline import GesturePipeline
+        self.assertTrue(hasattr(GesturePipeline, "health_status"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
