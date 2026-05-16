@@ -25,6 +25,45 @@ TOOL_SCHEMAS = [
         "parameters": {"type": "object", "properties": {
             "city": {"type": "string", "description": "城市英文/拼音"},
         }, "required": ["city"]}}},
+    # ===== 板卡感知 / TTS / 记忆 工具（生产暴露）=====
+    {"type": "function", "function": {
+        "name": "get_gesture",
+        "description": "读当前手势识别状态（D435 深度相机 + NPU 已聚合的最新帧）。返回 gesture/confidence/wrist_distance_m/palm_3d_m。用户问'我在干什么''看到我的手了吗'时调",
+        "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {
+        "name": "get_distance",
+        "description": "读用户距摄像头距离。region='user' 整体距离, region='hand' 手部距离。用户问'我离屏幕多远''能看到我吗'时调",
+        "parameters": {"type": "object", "properties": {
+            "region": {"type": "string", "enum": ["user", "hand"], "default": "user"},
+        }}}},
+    {"type": "function", "function": {
+        "name": "get_scene",
+        "description": "综合视觉感知描述视野（人 + 距离 + 手势 + 表情 + 是否看屏幕）。用户问'你看到什么''描述一下'时调",
+        "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {
+        "name": "identify_user",
+        "description": "读当前用户面部 + 表情 + 头姿（NPU 已检测）。用户问'你认得我吗''我现在什么表情'时调",
+        "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {
+        "name": "speak",
+        "description": "让你的声音说出 text（前端 Web Speech API 触发，独立于聊天文字流）。在你想主动开口、强调情绪、或对方让你'说出来听听'时调。text 限 100 字以内",
+        "parameters": {"type": "object", "properties": {
+            "text": {"type": "string", "description": "要说出来的文字（≤ 100 字）"},
+        }, "required": ["text"]}}},
+    {"type": "function", "function": {
+        "name": "memory_store",
+        "description": "把一条用户事实写入长期记忆（L2 persona facts）。当用户告诉你他的名字/偏好/生日/工作等需要长期记住的信息时调。importance 0-1（关键信息如名字用 0.8+）",
+        "parameters": {"type": "object", "properties": {
+            "content": {"type": "string", "description": "要记住的事实，自然语言"},
+            "importance": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.5},
+        }, "required": ["content"]}}},
+    {"type": "function", "function": {
+        "name": "memory_recall",
+        "description": "查长期记忆（L2 persona facts），返回按重要性排序的最近 N 条。用户问'你还记得我吗''之前我说过什么'时调",
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string", "description": "暂未实现 query 过滤，传空即可", "default": ""},
+            "top_n": {"type": "integer", "minimum": 1, "maximum": 20, "default": 5},
+        }}}},
     # ===== ROADMAP: 下列 schema 未在 webui 生产暴露，路线图保留供未来扩展 =====
     # 若实现接入生产，需同步检查 description/parameters 是否与当时 API 漂移
     {"type": "function", "function": {

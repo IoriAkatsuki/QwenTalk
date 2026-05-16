@@ -19,76 +19,34 @@ _PROJ = Path(__file__).resolve().parent.parent
 if str(_PROJ) not in sys.path:
     sys.path.insert(0, str(_PROJ))
 
-from tools import get_system_info, get_temperature  # noqa: E402
 from tool_schemas import TOOL_SCHEMAS as _ALL_SCHEMAS  # noqa: E402 — 单一 schema 源
 from voice_pipeline import LLM_URL, SENTENCE_BREAK, _iter_sse_deltas  # noqa: E402
+from . import tool_impls  # noqa: E402 — 9 个工具实现拆离，避免本文件撑爆 300
 
 ROUND_TIMEOUT_S = 150.0  # 每轮 detect 超时；含 system prompt 504 字 + tools schema + tool_result 累积
-WTTR_TIMEOUT_S = 8.0
-BING_TIMEOUT_S = 8.0
-BING_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
 MAX_ITERATIONS = 4  # ReAct loop 硬上限：模型 tool_call 最多 4 次防死循环
 HISTORY_MAX_CHARS = 2500  # L0 history 截窗阈值（≈ 1000-2500 tokens，给 Qwen3.6 4096 留 buffer）
 HISTORY_KEEP_TAIL = 6  # 截窗时保留最近 K 条 + 当前 user
 
 
-def web_search(query: str, max_results: int = 3) -> dict:
-    """Bing 中国版 HTML 抓取（板卡国内可达；DDG/SearXNG 都不可用的 fallback）。"""
-    import re
-    import urllib.parse
-    import urllib.request
-    try:
-        url = f"https://cn.bing.com/search?q={urllib.parse.quote(query)}"
-        req = urllib.request.Request(url, headers={"User-Agent": BING_UA})
-        html = urllib.request.urlopen(req, timeout=BING_TIMEOUT_S).read()
-        html = html.decode("utf-8", errors="ignore")
-        blocks = re.findall(r'<li class="b_algo".*?</li>', html, re.S)
-        results = []
-        for b in blocks[:max_results]:
-            h2 = re.search(r"<h2[^>]*>(.*?)</h2>", b, re.S)
-            p = re.search(r"<p[^>]*>(.*?)</p>", b, re.S)
-            raw_title = h2.group(1) if h2 else ""
-            raw_snippet = p.group(1) if p else ""
-            title = re.sub(r"<[^>]+>", "", raw_title)
-            title = re.sub(r"&ensp;|&nbsp;|&amp;", " ", title)
-            title = re.sub(r"\s+", " ", title).strip()
-            snippet = re.sub(r"<[^>]+>", "", raw_snippet)
-            snippet = re.sub(r"&ensp;|&#0183;|&nbsp;|&amp;", " ", snippet)
-            snippet = re.sub(r"\s+", " ", snippet)[:200]
-            if snippet or title:
-                results.append({"title": title[:80], "snippet": snippet})
-        if not results:
-            return {"error": "Bing 未返回结果"}
-        return {"query": query, "results": results, "source": "cn.bing.com"}
-    except Exception as e:  # noqa: BLE001
-        return {"error": f"Bing 失败: {type(e).__name__}: {e}"}
-
-
-def get_weather(city: str = "Beijing") -> dict:
-    """wttr.in 天气查询（无 KEY，板卡国内网络可达）。"""
-    try:
-        r = requests.get(
-            f"https://wttr.in/{city}?format=j1", timeout=WTTR_TIMEOUT_S,
-            headers={"User-Agent": "curl/7.0"},
-        )
-        r.raise_for_status()
-        d = r.json()
-        c = d["current_condition"][0]
-        return {
-            "city": city,
-            "temp_c": c["temp_C"],
-            "feels_like_c": c["FeelsLikeC"],
-            "desc": c["weatherDesc"][0]["value"],
-            "humidity_pct": c["humidity"],
-            "wind_kmh": c.get("windspeedKmph", "n/a"),
-            "source": "wttr.in",
-        }
-    except Exception as e:  # noqa: BLE001
-        return {"error": f"wttr.in 失败: {type(e).__name__}: {e}"}
-
-
-TOOLS = {"web_search": web_search, "get_weather": get_weather,
-         "get_temperature": get_temperature, "get_system_info": get_system_info}
+TOOLS = {
+    # 网络 / 外部
+    "web_search": tool_impls.web_search,
+    "get_weather": tool_impls.get_weather,
+    # 系统状态
+    "get_temperature": tool_impls.get_temperature,
+    "get_system_info": tool_impls.get_system_info,
+    # D435 + NPU 感知
+    "get_gesture": tool_impls.get_gesture,
+    "get_distance": tool_impls.get_distance,
+    "get_scene": tool_impls.get_scene,
+    "identify_user": tool_impls.identify_user,
+    # TTS / 主动输出
+    "speak": tool_impls.speak,
+    # L2 长期记忆
+    "memory_store": tool_impls.memory_store,
+    "memory_recall": tool_impls.memory_recall,
+}
 _SCHEMA_BY_NAME = {s["function"]["name"]: s for s in _ALL_SCHEMAS}
 TOOL_SCHEMAS = [_SCHEMA_BY_NAME[name] for name in TOOLS if name in _SCHEMA_BY_NAME]
 _missing = [n for n in TOOLS if n not in _SCHEMA_BY_NAME]

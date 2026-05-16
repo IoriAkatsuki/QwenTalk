@@ -16,6 +16,7 @@ import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
+from . import tool_impls
 from .chat_handler import (
     get_memory_store,
     set_perception_provider,
@@ -67,6 +68,10 @@ async def _lifespan(app: FastAPI):
     except Exception as e:  # noqa: BLE001 — degraded mode 兜底
         print(f"[WARN] pipeline degraded (D435/NPU?): {e}")
     set_perception_provider(perception)
+    # 7 个新 in-process tools 的 provider 注入
+    tool_impls.set_pipeline(pipeline)
+    tool_impls.set_perception(perception)
+    tool_impls.set_memory_store(get_memory_store())
     perception.subscribe(_broadcast_perception_sync)
     perception.subscribe(trigger_rules.on_perception)
     for evt in _BUS_FORWARD:
