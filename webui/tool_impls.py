@@ -201,7 +201,10 @@ def speak(text: str) -> dict:
         return {"error": "empty text"}
     if len(text) > SPEAK_MAX_CHARS:
         text = text[:SPEAK_MAX_CHARS]
-    _perception.push_event(f"speak:|{text}")
+    try:
+        _perception.push_event(f"speak:|{text}")
+    except Exception as e:  # noqa: BLE001 — push_event 异常不冒泡破坏 ReAct loop
+        return {"error": f"push_event 失败: {type(e).__name__}: {e}"}
     return {"queued": True, "text": text}
 
 

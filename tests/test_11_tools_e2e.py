@@ -284,6 +284,18 @@ class TestSpeakTool:
         result = tool_impls.speak(text="hi")
         assert "error" in result
 
+    def test_speak_push_event_raises_returns_error(self):
+        """push_event 抛异常应被 catch 返回 error dict，不冒泡破坏 ReAct loop（M3）。"""
+        from unittest.mock import MagicMock
+        from webui import tool_impls
+        perc = MagicMock()
+        perc.push_event = MagicMock(side_effect=RuntimeError("event queue full"))
+        tool_impls.set_perception(perc)
+        result = tool_impls.speak(text="测试")
+        assert "error" in result
+        assert "RuntimeError" in result["error"]
+        assert "queue full" in result["error"]
+
 
 class TestMemoryTools:
     """memory_store / memory_recall —— 真 SQLite 持久化。"""
