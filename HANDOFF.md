@@ -34,6 +34,29 @@ http://192.168.1.8:8765/intel_chan 应该能看到 Live2D + 聊天 UI 联动。
 | H | `9ae7fcb` | **codex review 7 项 fix**（2 CRITICAL + 3 HIGH + 2 MED）|
 | I | `0dc3ae2` | HANDOFF + board e2e smoke 脚本 |
 | J | `fd6d2ee` | **板卡 e2e 验证 6/6 通过** + FastAPI lifespan |
+| K | `52a4a3e` | HANDOFF 标记 e2e PASS |
+| L | `3de37a6` | head.pat event 通道 (codex follow-up) |
+| M | `3fba412` | **方案 A**: pipeline.start() 同步等 init + health_status (fan-out #1) |
+| N | `6419faa` | smoke 加 init-failure 传播测试 (fan-out #3) |
+| O | `bf66c27` | **方案 B**: `/api/health` endpoint (fan-out #2) |
+
+## 终态验证
+
+**板卡 unit smoke 23/23 ✅**（含 3 个新 contract 测试）
+**板卡 e2e smoke 6/6 ✅** (`/api/state` + `/intel_chan` + WS + `/stream.mjpg`)
+**`/api/health` 实测返回**:
+```json
+{
+  "pipeline": {"alive": true, "ready": true, "init_error": null},
+  "perception": {"thread_alive": true, "subscribers": 1},
+  "llama_server": {"reachable": true, "url": "http://127.0.0.1:8080/v1/models"},
+  "status": "ok"
+}
+```
+
+Codex follow-up 标的 2 隐性问题全部修了：
+- ✅ pipeline init 失败感知 — start() 现在同步等 ready event + re-raise；health_status 暴露
+- ✅ head.pat 注入点 — PerceptionFusion.push_event() 接口已就位
 
 ## Codex Review 反馈处理（agent `ab73b4b8bd11b790e`）
 
