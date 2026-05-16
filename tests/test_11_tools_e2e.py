@@ -254,6 +254,28 @@ class TestPerceptionTools:
         assert "happy" == result["emotion"]
         assert result["gaze_on_screen"] is True
 
+    def test_identify_user_no_face_detected(self):
+        """face.bbox=None 时 face_detected=False，不抛异常（TG6 边界）。"""
+        from webui.perception_fusion import (
+            EmotionState, FacePoseState, GazeState, HandState, PerceptionState,
+        )
+        from webui import tool_impls
+
+        class _FacelessPerc:
+            def snapshot(self):
+                return PerceptionState(
+                    timestamp=0, hand=HandState(), emotion=EmotionState(),
+                    gaze=GazeState(), face=FacePoseState(bbox=None),
+                    distance_m=-1, user_present=False, event="",
+                )
+
+            def push_event(self, e): pass
+
+        tool_impls.set_perception(_FacelessPerc())
+        result = tool_impls.identify_user()
+        assert result["face_detected"] is False
+        assert "note" in result
+
 
 class TestSpeakTool:
     """speak 通过 perception.push_event 投递到前端 WS。"""
@@ -661,6 +683,21 @@ class TestReActLoop:
         assert "done" == kinds[-1]
         assert 2 == len(history)  # user + assistant
         assert "assistant" == history[-1]["role"]
+
+    def test_exec_tool_handles_invalid_json_args(self):
+        """_exec_tool 收到非法 JSON args 应返回 error dict 不抛（TG5 容错）。"""
+        from webui import chat_tools
+        result = chat_tools._exec_tool("get_temperature", "{this is not json")
+        assert "error" in result
+        err = result["error"].lower()
+        assert "json" in err or "decode" in err
+
+    def test_exec_tool_unknown_tool_returns_error(self):
+        """未知 tool name 应返回 error dict 不抛。"""
+        from webui import chat_tools
+        result = chat_tools._exec_tool("nonexistent_tool_xyz", "{}")
+        assert "error" in result
+        assert "unknown" in result["error"].lower()
 
     def test_react_max_iterations_guard(self, wired_tool_impls):
         """LLM 死循环调 tool 时应触发 MAX_ITERATIONS 保护并 fail loud。"""
