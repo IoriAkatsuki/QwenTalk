@@ -650,7 +650,9 @@ class TestReActLoop:
             (e for e in reversed(events) if e[0] == "sentence"), None,
         )
         assert last_sentence is not None
-        assert "工具" in last_sentence[1] or "尝试" in last_sentence[1]
+        # M1 收紧：契约绑定 chat_tools.py:244 fail-loud 文案 + MAX_ITERATIONS 字面
+        assert "尝试调用" in last_sentence[1]
+        assert str(chat_tools.MAX_ITERATIONS) in last_sentence[1]
 
 
 # ---------------------------------------------------------------------------
