@@ -1,16 +1,7 @@
 """FastAPI WebUI for D435 + NPU 手势识别 + Intel 酱 实时驱动。
 
-路由:
-    GET  /                主页
-    GET  /intel_chan      Intel 酱 Live2D 前端
-    GET  /stream.mjpg     MJPEG 视频流
-    GET  /events          SSE 状态推送（兼容旧客户端）
-    GET  /api/state       一次性 JSON 状态
-    WS   /ws/perception   PerceptionState 5Hz 推送（emotion/gaze/hand/face）
-    WS   /ws/chat         流式聊天 (用户文字 → LLM stream → 按句切分)
-
-启动:
-    python -m QwenTalk.webui.server
+路由: / · /intel_chan · /stream.mjpg · /events · /api/state · /api/health ·
+WS /ws/perception · WS /ws/chat。启动: python -m QwenTalk.webui.server
 """
 from __future__ import annotations
 
@@ -35,15 +26,14 @@ INTEL_CHAN_HTML = PROJECT_DIR / "intel_chan.html"
 LIVE2D_DEMO_HTML = PROJECT_DIR / "live2d_demo.html"
 SSE_INTERVAL_S = 0.2  # 5 Hz 状态推送
 
-# 一次性把项目根加入 sys.path（避免每个请求重复 insert 污染累积，详见 codex review HIGH-3）
+# 一次性把项目根加入 sys.path（codex review HIGH-3：避免每请求重复 insert 累积）
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 pipeline = GesturePipeline()
 perception = PerceptionFusion(pipeline, rate_hz=5)
 _ws_perception_clients: set[WebSocket] = set()
-# CRITICAL-1 fix: 在 startup 保存主 loop 引用；
-# perception 线程用它做 run_coroutine_threadsafe，避免 get_event_loop() 在非 asyncio 线程抛 RuntimeError。
+# CRITICAL-1: startup 保存主 loop 给 perception 线程做 run_coroutine_threadsafe
 _main_loop: asyncio.AbstractEventLoop | None = None
 
 
@@ -111,10 +101,8 @@ async def api_state() -> JSONResponse:
 @app.get("/stream.mjpg")
 async def stream_mjpg() -> StreamingResponse:
     boundary = "frame"
-    return StreamingResponse(
-        _mjpeg_iter(boundary),
-        media_type=f"multipart/x-mixed-replace; boundary={boundary}",
-    )
+    return StreamingResponse(_mjpeg_iter(boundary),
+        media_type=f"multipart/x-mixed-replace; boundary={boundary}")
 
 
 async def _mjpeg_iter(boundary: str):
@@ -165,13 +153,9 @@ async def ws_perception(ws: WebSocket) -> None:
 
 @app.websocket("/ws/chat")
 async def ws_chat(ws: WebSocket) -> None:
-    """流式聊天代理: 客户端发用户消息 → 转发 llama-server → 按句切分回客户端。
+    """流式聊天代理：客户端发文字 → llama-server 流式 → 按句切分回客户端。
 
-    Protocol:
-        client → {"text": "你好", "thinking": "off"}
-        server → {"type": "sentence", "text": "你好啊！"} 一句一帧
-        server → {"type": "done", "full": "你好啊！很高兴见到你。"} 结束
-        server → {"type": "error", "message": "..."}
+    Protocol: client {text, thinking} → server {type: sentence|done|error, ...}
     """
     await ws.accept()
     try:
@@ -197,8 +181,7 @@ async def _stream_chat_to_ws(ws: WebSocket, req: dict) -> None:
     loop = asyncio.get_running_loop()
     q: asyncio.Queue = asyncio.Queue()
     producer = _make_chat_producer(loop, q, text, system, max_tokens, disable_thinking)
-    # HIGH-2 fix: ensure_future + executor，任何未捕异常会 propagate 到 future，
-    # 由下面的 timeout 兜底防止 ws 永远挂起。
+    # HIGH-2 fix: ensure_future + executor — 未捕异常进 future，由 timeout 兜底
     future = asyncio.ensure_future(loop.run_in_executor(None, producer))
 
     full = ""
@@ -249,6 +232,56 @@ def _parse_chat_req(req: dict) -> tuple[str, str, int, object]:
     max_tokens = int(req.get("max_tokens", 200))
     disable_thinking = detect_thinking_support(req.get("thinking", "auto"))
     return text, system, max_tokens, disable_thinking
+
+
+@app.get("/api/health")
+async def api_health() -> JSONResponse:
+    """硬件状态聚合：pipeline / perception / llama-server 三部件健康度。"""
+    pipe, perc = _get_pipeline_health(), _get_perception_health()
+    llm = await _check_llama_reachable()
+    return JSONResponse({"pipeline": pipe, "perception": perc, "llama_server": llm,
+                         "status": _aggregate_status(pipe, perc, llm)})
+
+
+def _get_pipeline_health() -> dict:
+    """优先 pipeline.health_status()（子任务 1 接口），缺失时 fallback 自检线程。"""
+    if hasattr(pipeline, "health_status"):
+        return pipeline.health_status()
+    alive = pipeline._thread is not None and pipeline._thread.is_alive()
+    return {"alive": alive, "ready": True, "init_error": None}
+
+
+def _get_perception_health() -> dict:
+    t = perception._thread
+    return {"thread_alive": t is not None and t.is_alive(),
+            "subscribers": len(perception._subs)}
+
+
+async def _check_llama_reachable(
+    url: str = "http://127.0.0.1:8080/v1/models", timeout: float = 2.0,
+) -> dict:
+    """异步探测 llama-server — urllib 跑 executor 不 block event loop。"""
+    import urllib.request
+    def _probe() -> bool:
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as r:
+                return r.status == 200
+        except Exception:  # noqa: BLE001 — 网络/超时都视作 unreachable
+            return False
+    try:
+        ok = await asyncio.wait_for(asyncio.to_thread(_probe), timeout=timeout + 1.0)
+        return {"reachable": bool(ok), "url": url}
+    except Exception:  # noqa: BLE001
+        return {"reachable": False, "url": url}
+
+
+def _aggregate_status(pipe: dict, perc: dict, llm: dict) -> str:
+    """核心线程死 → down；ready/llm 缺失 → degraded；全活 → ok。"""
+    if not pipe.get("alive") or not perc.get("thread_alive"):
+        return "down"
+    if not pipe.get("ready") or not llm.get("reachable"):
+        return "degraded"
+    return "ok"
 
 
 def main() -> None:
