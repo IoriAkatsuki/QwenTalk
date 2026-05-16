@@ -158,7 +158,9 @@ let blinkPhase = 0;              // 0=未眨；>0=正在眨眼 (s)
 let userPresent = true;          // perception 推送的 user_present；缺失时按 true
 let distanceM = -1;              // 用户距离（米），<0 表示未知
 
-// 监听浏览器 TTS 播音边界 — speak handler 在 line 185-198，这里挂全局 hook 不重叠
+// 监听浏览器 TTS 播音边界 — 全局 monkey-patch 解耦 lipsync 与 speak handler，
+// 让任何 speak() 调用都触发 lipsync（含将来本地 TTS SDK）；若改 speak handler
+// 直接挂 u.onstart/onend，可移除本 hook。.bind 保 this 指向 speechSynthesis。
 if ("speechSynthesis" in window) {
   try {
     const _origSpeak = speechSynthesis.speak.bind(speechSynthesis);
