@@ -8,7 +8,7 @@
 
 ```
 [02:33:35] RESULT: 6 passed, 0 failed, 0 skipped ✅
-  - server ready (port 8765)
+  - server ready (port 8000)
   - /api/state 含 perception
   - /intel_chan 返回 Live2D HTML
   - /ws/perception 推送 PerceptionState
@@ -17,7 +17,7 @@
 ```
 
 **意味着**: Intel 酱后端 + 前端在板卡上完整工作；浏览器打开
-http://192.168.1.8:8765/intel_chan 应该能看到 Live2D + 聊天 UI 联动。
+http://192.168.1.8:8000/intel_chan 应该能看到 Live2D + 聊天 UI 联动。
 
 ## 完成进度（所有 Phase 都 ✅）
 
@@ -106,11 +106,11 @@ ssh intel@192.168.1.8 '/home/intel/miniforge3/envs/openvino/bin/pip install fast
 
 # 3. 跑 board smoke
 ssh intel@192.168.1.8 'cd /home/intel/QwenTalk && \
-    /home/intel/miniforge3/envs/openvino/bin/python -m webui.server --host 0.0.0.0 --port 8765 &
+    /home/intel/miniforge3/envs/openvino/bin/python -m webui.server --host 0.0.0.0 --port 8000 &
     sleep 30 && bash tests/test_smoke_board.sh'
 
 # 4. 浏览器 (本机/手机) 打开
-#    http://192.168.1.8:8765/intel_chan
+#    http://192.168.1.8:8000/intel_chan
 ```
 
 ## 文件清单（本次新增）
@@ -131,7 +131,7 @@ ssh intel@192.168.1.8 'cd /home/intel/QwenTalk && \
 ## 明日 Day 1 建议（按优先级）
 
 1. ~~**跑板卡 smoke**~~ ✅ 已完成 6/6 PASS（02:33）
-2. **浏览器实测**（30 min）— 启动 webui 后打开 http://192.168.1.8:8765/intel_chan
+2. **浏览器实测**（30 min）— 启动 webui 后打开 http://192.168.1.8:8000/intel_chan
    看 Live2D 渲染 + 跟它聊几句（用 LLM streaming 返回）
 3. **NPU gaze 编译**（半天）— `gaze-estimation-adas-0002`
 4. **NPU emotion 替换** `_NullEmotionSource` → 真 emotion 概率喂 PerceptionFusion
