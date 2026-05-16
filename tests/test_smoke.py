@@ -75,6 +75,26 @@ class TestPerceptionFusion(unittest.TestCase):
         self.assertIsInstance(first, PerceptionState)
         self.assertEqual("point", first.hand.gesture)
 
+    def test_push_event_appears_in_next_state(self):
+        """Codex follow-up: 验证 push_event 在下一帧塞 state.event。"""
+        from webui.perception_fusion import PerceptionFusion
+
+        gp = MagicMock()
+        gp.snapshot.return_value = {"gesture": "init", "conf": 0.0,
+                                     "wrist_m": -1.0, "palm_score": 0.0}
+        fusion = PerceptionFusion(gp, rate_hz=20)
+        received = []
+        fusion.subscribe(lambda s: received.append(s.event))
+        fusion.start()
+        time.sleep(0.05)
+        fusion.push_event("head.pat")
+        time.sleep(0.15)  # 等几帧
+        fusion.stop()
+
+        self.assertIn("head.pat", received, "head.pat event 应在某帧出现")
+        events = [e for e in received if e == "head.pat"]
+        self.assertEqual(1, len(events), "事件只发一次，下帧应清空")
+
 
 class TestEventBus(unittest.TestCase):
     """3. EventBus subscribe + publish 路径."""

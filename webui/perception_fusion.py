@@ -58,6 +58,7 @@ class PerceptionState:
     face: FacePoseState = field(default_factory=FacePoseState)
     distance_m: float = -1.0  # 用户与摄像头距离 (D435 9 宫格 center 中位)
     user_present: bool = False  # face detected + distance in valid range
+    event: str = ""  # 单帧事件标签 (head.pat / gesture.wave / ...)，前端按此触发动画
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -122,10 +123,19 @@ class PerceptionFusion:
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._latest = PerceptionState()
+        self._pending_events: list[str] = []  # 下一帧要塞进 state.event 的事件队列
 
     def subscribe(self, callback: Callable[[PerceptionState], None]) -> None:
         with self._lock:
             self._subs.append(callback)
+
+    def push_event(self, event_type: str) -> None:
+        """外部 detector（如 HeadPatDetector）触发的单帧事件注入。
+
+        会在下一个 5Hz tick 时塞入 state.event，前端 handle 后清空。
+        """
+        with self._lock:
+            self._pending_events.append(event_type)
 
     def snapshot(self) -> PerceptionState:
         with self._lock:
@@ -173,6 +183,11 @@ class PerceptionFusion:
             face.bbox is not None
             or (0.2 < distance < 5.0)
         )
+        # 取一个 pending event（每帧只发一个，避免高频拥塞）
+        event = ""
+        with self._lock:
+            if self._pending_events:
+                event = self._pending_events.pop(0)
         return PerceptionState(
             timestamp=time.time(),
             hand=hand,
@@ -181,4 +196,5 @@ class PerceptionFusion:
             face=face,
             distance_m=distance,
             user_present=user_present,
+            event=event,
         )
