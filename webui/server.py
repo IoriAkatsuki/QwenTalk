@@ -16,6 +16,8 @@ import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
+from .chat_handler import set_perception_provider, stream_chat_to_ws
+from .event_bus import EventBus, TriggerRules
 from .pipeline import GesturePipeline
 from .perception_fusion import PerceptionFusion
 
@@ -32,9 +34,20 @@ if str(PROJECT_DIR) not in sys.path:
 
 pipeline = GesturePipeline()
 perception = PerceptionFusion(pipeline, rate_hz=5)
+event_bus = EventBus()
+trigger_rules = TriggerRules(event_bus)
 _ws_perception_clients: set[WebSocket] = set()
 # CRITICAL-1: startup 保存主 loop 给 perception 线程做 run_coroutine_threadsafe
 _main_loop: asyncio.AbstractEventLoop | None = None
+
+# event_bus → perception.push_event 转发：让 user.arrived 等事件经 WS 推到前端。
+_BUS_FORWARD = ("user.arrived", "user.left", "user.approaching",
+                "gaze.away", "gaze.back", "user.silent")
+
+
+def _forward_bus_to_perception(event) -> None:
+    """EventBus handler — 把规则触发的事件灌进 perception 的事件通道。"""
+    perception.push_event(event.type)
 
 
 @asynccontextmanager
@@ -43,7 +56,11 @@ async def _lifespan(app: FastAPI):
     global _main_loop
     _main_loop = asyncio.get_running_loop()
     pipeline.start()
+    set_perception_provider(perception)
     perception.subscribe(_broadcast_perception_sync)
+    perception.subscribe(trigger_rules.on_perception)  # event_bus 接入
+    for evt in _BUS_FORWARD:
+        event_bus.subscribe(evt, _forward_bus_to_perception)
     perception.start()
     try:
         yield
@@ -153,15 +170,16 @@ async def ws_perception(ws: WebSocket) -> None:
 
 @app.websocket("/ws/chat")
 async def ws_chat(ws: WebSocket) -> None:
-    """流式聊天代理：客户端发文字 → llama-server 流式 → 按句切分回客户端。
+    """流式聊天代理：tool-aware（chat_handler.stream_chat_to_ws）。
 
-    Protocol: client {text, thinking} → server {type: sentence|done|error, ...}
+    Protocol: {text, system?, max_tokens?, thinking?}
+      → {type: sentence|tool_call|tool_result|done|error, ...}
     """
     await ws.accept()
     try:
         while True:
             req = json.loads(await ws.receive_text())
-            await _stream_chat_to_ws(ws, req)
+            await stream_chat_to_ws(ws, req)
     except WebSocketDisconnect:
         return
     except Exception as e:  # noqa: BLE001
@@ -169,69 +187,6 @@ async def ws_chat(ws: WebSocket) -> None:
             await ws.send_text(json.dumps({"type": "error", "message": str(e)}))
         except Exception:  # noqa: BLE001
             pass
-
-
-async def _stream_chat_to_ws(ws: WebSocket, req: dict) -> None:
-    """单次聊天请求：流式拉 call_llm_stream → 每句立即推 WS。"""
-    text, system, max_tokens, disable_thinking = _parse_chat_req(req)
-    if not text:
-        await ws.send_text(json.dumps({"type": "error", "message": "empty text"}))
-        return
-
-    loop = asyncio.get_running_loop()
-    q: asyncio.Queue = asyncio.Queue()
-    producer = _make_chat_producer(loop, q, text, system, max_tokens, disable_thinking)
-    # HIGH-2 fix: ensure_future + executor — 未捕异常进 future，由 timeout 兜底
-    future = asyncio.ensure_future(loop.run_in_executor(None, producer))
-
-    full = ""
-    while True:
-        try:
-            kind, payload, full_so_far = await asyncio.wait_for(q.get(), timeout=180.0)
-        except asyncio.TimeoutError:
-            await ws.send_text(json.dumps({"type": "error", "message": "timeout"}))
-            future.cancel()
-            return
-        if kind == "sentence":
-            full = full_so_far or full
-            await ws.send_text(json.dumps(
-                {"type": "sentence", "text": payload}, ensure_ascii=False
-            ))
-        elif kind == "done":
-            await ws.send_text(json.dumps({"type": "done", "full": full}, ensure_ascii=False))
-            return
-        elif kind == "error":
-            await ws.send_text(json.dumps({"type": "error", "message": payload}))
-            return
-
-
-def _make_chat_producer(loop, q, text, system, max_tokens, disable_thinking):
-    """构造跑在 executor 的 producer，捕异常成 error 帧入队不挂死消费端。"""
-    from voice_pipeline import call_llm_stream  # noqa: E402
-
-    def producer() -> None:
-        try:
-            for sentence, full_so_far in call_llm_stream(
-                text, system=system, max_tokens=max_tokens,
-                disable_thinking=disable_thinking,
-            ):
-                loop.call_soon_threadsafe(q.put_nowait, ("sentence", sentence, full_so_far))
-            loop.call_soon_threadsafe(q.put_nowait, ("done", None, None))
-        except Exception as e:  # noqa: BLE001 — 必须吞，否则消费端挂死
-            loop.call_soon_threadsafe(q.put_nowait, ("error", str(e), None))
-
-    return producer
-
-
-def _parse_chat_req(req: dict) -> tuple[str, str, int, object]:
-    """从客户端请求提取 (text, system, max_tokens, disable_thinking)。"""
-    from voice_pipeline import detect_thinking_support  # noqa: E402
-
-    text = str(req.get("text", "")).strip()
-    system = req.get("system") or "你是 Intel 酱，一个温柔的嵌入式 AI 助手，用一两句话回答。"
-    max_tokens = int(req.get("max_tokens", 200))
-    disable_thinking = detect_thinking_support(req.get("thinking", "auto"))
-    return text, system, max_tokens, disable_thinking
 
 
 @app.get("/api/health")

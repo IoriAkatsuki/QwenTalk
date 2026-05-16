@@ -8,11 +8,25 @@ from __future__ import annotations
 TOOL_SCHEMAS = [
     {"type": "function", "function": {
         "name": "web_search",
-        "description": "在 DuckDuckGo 搜索网页内容获取实时信息（天气、新闻、实时数据）",
+        "description": (
+            "Bing 中国版 HTML 搜索（板卡国内可达）。通用网页搜索 fallback；"
+            "天气问题请优先用 get_weather。"
+        ),
         "parameters": {"type": "object", "properties": {
             "query": {"type": "string", "description": "搜索关键词"},
             "max_results": {"type": "integer", "default": 3},
         }, "required": ["query"]}}},
+    {"type": "function", "function": {
+        "name": "get_weather",
+        "description": (
+            "查询指定城市当前天气（温度/体感/描述/湿度/风速）。"
+            "用户问天气类问题一律调此工具。city 用英文或拼音，如 Beijing/Shanghai/Tokyo。"
+        ),
+        "parameters": {"type": "object", "properties": {
+            "city": {"type": "string", "description": "城市英文/拼音"},
+        }, "required": ["city"]}}},
+    # ===== ROADMAP: 下列 schema 未在 webui 生产暴露，路线图保留供未来扩展 =====
+    # 若实现接入生产，需同步检查 description/parameters 是否与当时 API 漂移
     {"type": "function", "function": {
         "name": "calculate",
         "description": "执行安全的数学表达式计算（支持四则运算、math 函数）",

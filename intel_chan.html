@@ -204,16 +204,26 @@ const connectChat = () => {
   chatWs = new WebSocket(`${proto}//${location.host}/ws/chat`);
   chatWs.onopen = () => sendBtn.disabled = false;
   chatWs.onclose = () => { sendBtn.disabled = true; setTimeout(connectChat, 3000); };
-  let curBot = null;
+  let curBot = null, toolHint = null;
+  const clearToolHint = () => { if (toolHint) { toolHint.remove(); toolHint = null; } };
   chatWs.onmessage = (ev) => {
     const m = JSON.parse(ev.data);
     if (m.type === "sentence") {
+      clearToolHint();
       if (!curBot) curBot = addMsg("bot", "");
       curBot.textContent += m.text + " ";
+    } else if (m.type === "tool_call") {
+      const q = (() => { try { return JSON.parse(m.arguments).query || ""; } catch { return ""; } })();
+      const label = m.name === "web_search" ? `🔎 查资料中: ${q}` : `🛠 调用 ${m.name}`;
+      if (toolHint) toolHint.textContent = label; else toolHint = addMsg("bot", label);
+    } else if (m.type === "tool_result") {
+      if (toolHint) toolHint.textContent += " · 已返回";
     } else if (m.type === "done") {
+      clearToolHint();
       curBot = null;
       sendBtn.disabled = false;
     } else if (m.type === "error") {
+      clearToolHint();
       addMsg("bot", `⚠ ${m.message}`);
       sendBtn.disabled = false;
     }

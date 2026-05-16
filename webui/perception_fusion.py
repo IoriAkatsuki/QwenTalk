@@ -129,13 +129,21 @@ class PerceptionFusion:
         with self._lock:
             self._subs.append(callback)
 
-    def push_event(self, event_type: str) -> None:
-        """外部 detector（如 HeadPatDetector）触发的单帧事件注入。
+    # codex review #3: 5Hz pop 一个 + 无界队列 → 队尾事件陈旧。限长 + 同类型去重
+    _PENDING_EVENTS_MAX = 8
 
-        会在下一个 5Hz tick 时塞入 state.event，前端 handle 后清空。
+    def push_event(self, event_type: str) -> None:
+        """外部 detector / event_bus 触发的单帧事件注入。
+
+        节流：同类型只保留最新位置；队列上限 8 防暴发陈旧。
+        例：5s 内 user.arrived 触发 10 次只保留 1 个，避免前端连发 10 次动画。
         """
         with self._lock:
+            if event_type in self._pending_events:
+                self._pending_events.remove(event_type)
             self._pending_events.append(event_type)
+            if len(self._pending_events) > self._PENDING_EVENTS_MAX:
+                self._pending_events.pop(0)
 
     def snapshot(self) -> PerceptionState:
         with self._lock:

@@ -27,8 +27,6 @@ import numpy as np
 import requests
 import soundfile as sf
 
-from sensevoice_asr import SenseVoiceASR
-
 LLM_BASE = "http://127.0.0.1:8080"
 LLM_URL = f"{LLM_BASE}/v1/chat/completions"
 MODELS_URL = f"{LLM_BASE}/v1/models"
@@ -236,6 +234,7 @@ def main() -> None:
             None: "kept on (user override)"}[disable_thinking]
     print(f"[LLM] thinking mode → {note}")
 
+    from sensevoice_asr import SenseVoiceASR  # lazy: 板卡 only 依赖
     asr = SenseVoiceASR(device=args.asr_device)
     audio = load_audio(args.file, args.rec_seconds)
 
