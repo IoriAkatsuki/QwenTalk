@@ -18,6 +18,13 @@ import numpy as np
 from resources import ensure_d435, ensure_npu, grab_frames
 from safe_eval import compute
 from tool_schemas import TOOL_SCHEMAS
+from edge_memory import (
+    decay_memory,
+    memory_stats,
+    recall_memory,
+    reinforce_memory,
+    store_memory,
+)
 
 
 # ============================================================================
@@ -216,12 +223,73 @@ def get_scene(vlm_url: str = "http://127.0.0.1:8081/completion") -> dict:
 
 
 # ============================================================================
+# 工具 8-11: edge memory — SQLite 短/长期记忆 + 指数衰减
+# ============================================================================
+def memory_store(
+    content: str,
+    memory_type: str = "short_term",
+    importance: float = 0.5,
+    tags: list[str] | None = None,
+    source: str = "agent",
+    half_life_hours: float | None = None,
+    summary: str = "",
+    metadata: dict[str, Any] | None = None,
+) -> dict:
+    """写入 SQLite 记忆。短期/长期用不同默认半衰期。"""
+    return store_memory(
+        content=content,
+        memory_type=memory_type,
+        importance=importance,
+        tags=tags,
+        source=source,
+        half_life_hours=half_life_hours,
+        summary=summary,
+        metadata=metadata,
+    )
+
+
+def memory_recall(
+    query: str,
+    memory_type: str = "any",
+    top_k: int = 5,
+    reinforce: bool = True,
+    include_decayed: bool = False,
+) -> dict:
+    """按相关性、重要性、访问强化和 exp 衰减检索记忆。"""
+    return recall_memory(
+        query=query,
+        memory_type=memory_type,
+        top_k=top_k,
+        reinforce=reinforce,
+        include_decayed=include_decayed,
+    )
+
+
+def memory_reinforce(memory_id: int, amount: float = 1.0) -> dict:
+    """显式强化一条记忆；高重要性或多次访问的短期记忆会固化为长期。"""
+    return reinforce_memory(memory_id=memory_id, amount=amount)
+
+
+def memory_decay(min_retention: float = 0.02, dry_run: bool = True) -> dict:
+    """清理已过期或保留率过低的记忆；默认 dry_run。"""
+    return decay_memory(min_retention=min_retention, dry_run=dry_run)
+
+
+def memory_status() -> dict:
+    """查看 SQLite 记忆库统计信息。"""
+    return memory_stats()
+
+
+# ============================================================================
 # 工具注册 + 分发
 # ============================================================================
 TOOL_REGISTRY: dict[str, Any] = {
     "web_search": web_search, "calculate": calculate,
     "get_system_info": get_system_info, "get_temperature": get_temperature,
     "get_distance": get_distance, "get_gesture": get_gesture, "get_scene": get_scene,
+    "memory_store": memory_store, "memory_recall": memory_recall,
+    "memory_reinforce": memory_reinforce, "memory_decay": memory_decay,
+    "memory_status": memory_status,
 }
 
 
