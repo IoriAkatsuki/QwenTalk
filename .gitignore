@@ -112,3 +112,12 @@ overnight_results/
 benchmark_outputs/
 outputs/
 tmp/
+
+# Runtime SQLite DB
+memory.db
+*.sqlite
+*.sqlite3
+
+# Profile / experiment runs
+profile_runs/
+test_corpus/
