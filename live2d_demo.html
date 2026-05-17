@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#1a1a2e">
+<title>Live2D 跨端验证</title>
+<style>
+  html, body { margin: 0; height: 100%; overscroll-behavior: none; touch-action: manipulation; }
+  body { background: #1a1a2e; color: #eee; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; overflow: hidden; }
+  #stage { display: block; width: 100vw; height: 100vh; }
+  #panel {
+    position: fixed; top: max(12px, env(safe-area-inset-top));
+    left: max(12px, env(safe-area-inset-left));
+    background: rgba(0,0,0,0.75); padding: 14px; border-radius: 10px;
+    font-size: 13px; line-height: 1.5; min-width: 240px;
+    max-width: calc(100vw - 24px);
+    backdrop-filter: blur(8px);
+  }
+  #panel h2 { margin: 0 0 8px; font-size: 14px; color: #7df; display: flex; justify-content: space-between; align-items: center;}
+  #panel h2 .toggle { font-size: 12px; cursor: pointer; user-select: none; color: #999; }
+  #panel.collapsed .body { display: none; }
+  .slider { display: flex; align-items: center; margin: 6px 0; }
+  .slider label { display: inline-block; width: 100px; font-size: 12px; }
+  .slider input[type=range] { flex: 1; height: 24px; }
+  .slider span { display: inline-block; width: 40px; text-align: right; font-family: monospace; font-size: 11px; color: #aaa; }
+  button { background: #2a4d6f; color: #fff; border: 0; padding: 8px 14px; margin: 4px 4px 4px 0; border-radius: 6px; font-size: 13px; cursor: pointer; touch-action: manipulation; }
+  button:active { background: #3a6d9f; }
+  #stats { margin-top: 10px; font-family: monospace; font-size: 11px; color: #9f9; }
+  #emotion { margin-top: 4px; font-family: monospace; font-size: 12px; color: #fda; }
+  #log { margin-top: 6px; font-family: monospace; font-size: 10px; color: #fa9; max-height: 72px; overflow-y: auto; }
+  @media (max-width: 600px) {
+    #panel { padding: 10px; min-width: unset; width: calc(100vw - 24px); }
+    .slider label { width: 80px; font-size: 11px; }
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+
+<div id="panel">
+  <h2>Live2D 跨端测试 <span class="toggle" id="toggle">▼</span></h2>
+  <div class="body">
+    <div class="slider"><label>眼球 X (左右)</label>
+      <input id="eyeX" type="range" min="-1" max="1" step="0.01" value="0">
+      <span id="eyeX_v">0.00</span></div>
+    <div class="slider"><label>眼球 Y (上下)</label>
+      <input id="eyeY" type="range" min="-1" max="1" step="0.01" value="0">
+      <span id="eyeY_v">0.00</span></div>
+    <div class="slider"><label>头 Yaw</label>
+      <input id="angX" type="range" min="-30" max="30" step="0.5" value="0">
+      <span id="angX_v">0.0</span></div>
+    <div class="slider"><label>头 Pitch</label>
+      <input id="angY" type="range" min="-30" max="30" step="0.5" value="0">
+      <span id="angY_v">0.0</span></div>
+    <div class="slider"><label>头 Roll</label>
+      <input id="angZ" type="range" min="-30" max="30" step="0.5" value="0">
+      <span id="angZ_v">0.0</span></div>
+    <div class="slider"><label>嘴张开</label>
+      <input id="mouth" type="range" min="0" max="1" step="0.01" value="0">
+      <span id="mouth_v">0.00</span></div>
+    <div class="slider"><label>嘴形 (哭笑)</label>
+      <input id="mouthForm" type="range" min="-1" max="1" step="0.01" value="0">
+      <span id="mouthForm_v">0.00</span></div>
+    <div class="slider"><label>笑眼</label>
+      <input id="smile" type="range" min="0" max="1" step="0.01" value="0">
+      <span id="smile_v">0.00</span></div>
+    <div class="slider"><label>眉毛上下</label>
+      <input id="browY" type="range" min="-1" max="1" step="0.01" value="0">
+      <span id="browY_v">0.00</span></div>
+    <div class="slider"><label>眉毛形状</label>
+      <input id="browForm" type="range" min="-1" max="1" step="0.01" value="0">
+      <span id="browForm_v">0.00</span></div>
+    <button id="blink">眨眼</button>
+    <button id="auto">🎬 自动</button>
+    <button id="follow">👀 追踪你的脸</button>
+    <button id="mimic">😀 模仿表情</button>
+    <div id="stats">渲染 FPS: —</div>
+    <div id="emotion">表情：—</div>
+    <div id="log"></div>
+  </div>
+</div>
+
+<div id="cam-preview" class="hidden">
+  <video id="cam-video" autoplay playsinline muted></video>
+  <canvas id="cam-overlay"></canvas>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/pixi.js@6.5.10/dist/browser/pixi.min.js"></script>
+<script src="https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pixi-live2d-display@0.4.0/dist/cubism4.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api/dist/face-api.js"></script>
+
+<style>
+  #cam-preview {
+    position: fixed; bottom: 12px; right: 12px;
+    width: 160px; height: 120px; background: #000;
+    border-radius: 8px; border: 2px solid #444;
+    overflow: hidden; z-index: 10;
+  }
+  #cam-preview video, #cam-preview canvas {
+    position: absolute; top: 0; left: 0;
+    width: 100%; height: 100%; transform: scaleX(-1);
+  }
+  #cam-preview.hidden { display: none; }
+</style>
+
+<script>
+const log = (msg) => {
+  const el = document.getElementById("log");
+  el.innerHTML += `<div>[${new Date().toLocaleTimeString()}] ${msg}</div>`;
+  el.scrollTop = el.scrollHeight;
+  console.log(msg);
+};
+
+const MODELS = {
+  haru:    "https://cdn.jsdelivr.net/gh/guansss/pixi-live2d-display@master/test/assets/haru/haru_greeter_t03.model3.json",
+  shizuku: "https://cdn.jsdelivr.net/gh/guansss/pixi-live2d-display@master/test/assets/shizuku/shizuku.model.json",
+};
+const MODEL_URL = MODELS[(new URLSearchParams(location.search).get("m")) || "haru"] || MODELS.haru;
+
+(async () => {
+  log("初始化 PIXI...");
+  const canvas = document.getElementById("stage");
+  const app = new PIXI.Application({
+    view: canvas,
+    width: window.innerWidth,
+    height: window.innerHeight,
+    autoStart: true,
+    backgroundAlpha: 0,
+    antialias: true,
+  });
+
+  log(`加载模型 ${MODEL_URL.split("/").pop()}...`);
+  let model;
+  try {
+    model = await PIXI.live2d.Live2DModel.from(MODEL_URL);
+  } catch (e) {
+    log(`❌ 加载失败: ${e.message}`);
+    return;
+  }
+  log("✅ 模型加载成功");
+
+  // 关掉默认的鼠标自动追踪（库 built-in），全部交给我们手动控制
+  model.autoInteract = false;
+
+  // 居中 + 缩放
+  const scale = Math.min(window.innerWidth / model.width, window.innerHeight / model.height) * 0.9;
+  model.scale.set(scale);
+  model.x = window.innerWidth / 2 - (model.width * scale) / 2;
+  model.y = window.innerHeight / 2 - (model.height * scale) / 2;
+  app.stage.addChild(model);
+
+  // 列出可控参数（debug：看模型有哪些 ParamEyeBallXY 之类）
+  const coreModel = model.internalModel.coreModel;
+  const ids = coreModel._parameterIds || [];
+  log(`模型暴露 ${ids.length} 个参数`);
+  ["ParamEyeBallX", "ParamEyeBallY", "ParamAngleX", "ParamAngleY",
+   "ParamAngleZ", "ParamMouthOpenY", "ParamEyeLOpen", "ParamEyeROpen"]
+    .forEach(p => log(`  ${p}: ${ids.includes(p) ? "✅" : "❌"}`));
+
+  // 绑定 slider → 参数
+  const bind = (sliderId, paramId, valueSpanId, multiplier = 1) => {
+    const slider = document.getElementById(sliderId);
+    const vSpan = document.getElementById(valueSpanId);
+    let val = 0;
+    slider.addEventListener("input", () => {
+      val = parseFloat(slider.value) * multiplier;
+      vSpan.textContent = parseFloat(slider.value).toFixed(2);
+    });
+    app.ticker.add(() => {
+      coreModel.setParameterValueById(paramId, val);
+    });
+  };
+
+  bind("eyeX", "ParamEyeBallX", "eyeX_v");
+  bind("eyeY", "ParamEyeBallY", "eyeY_v");
+  bind("angX", "ParamAngleX", "angX_v");
+  bind("angY", "ParamAngleY", "angY_v");
+  bind("angZ", "ParamAngleZ", "angZ_v");
+  bind("mouth", "ParamMouthOpenY", "mouth_v");
+  bind("mouthForm", "ParamMouthForm", "mouthForm_v");
+  // 笑眼绑两个参数同步动
+  ["smile"].forEach(s => {
+    const sl = document.getElementById(s), v = document.getElementById(s+"_v");
+    let val = 0;
+    sl.addEventListener("input", () => { val = parseFloat(sl.value); v.textContent = val.toFixed(2); });
+    app.ticker.add(() => {
+      coreModel.setParameterValueById("ParamEyeLSmile", val);
+      coreModel.setParameterValueById("ParamEyeRSmile", val);
+    });
+  });
+  ["browY", "browForm"].forEach((s, i) => {
+    const sl = document.getElementById(s), v = document.getElementById(s+"_v");
+    const pid = i === 0 ? "ParamBrowLY" : "ParamBrowLForm";
+    const pid2 = i === 0 ? "ParamBrowRY" : "ParamBrowRForm";
+    let val = 0;
+    sl.addEventListener("input", () => { val = parseFloat(sl.value); v.textContent = val.toFixed(2); });
+    app.ticker.add(() => {
+      coreModel.setParameterValueById(pid, val);
+      coreModel.setParameterValueById(pid2, val);
+    });
+  });
+
+  // 眨眼按钮
+  document.getElementById("blink").addEventListener("click", () => {
+    let phase = 0;
+    const blinkTicker = (delta) => {
+      phase += 0.15;
+      const v = phase < Math.PI ? Math.cos(phase) : 1;
+      coreModel.setParameterValueById("ParamEyeLOpen", v);
+      coreModel.setParameterValueById("ParamEyeROpen", v);
+      if (phase >= Math.PI * 2) {
+        app.ticker.remove(blinkTicker);
+        coreModel.setParameterValueById("ParamEyeLOpen", 1);
+        coreModel.setParameterValueById("ParamEyeROpen", 1);
+      }
+    };
+    app.ticker.add(blinkTicker);
+  });
+
+  // 自动 demo：眼球随圆周 + 头部跟随
+  let autoOn = false;
+  document.getElementById("auto").addEventListener("click", () => {
+    autoOn = !autoOn;
+    log(`自动 demo: ${autoOn ? "开" : "关"}`);
+  });
+  let t = 0;
+  app.ticker.add(() => {
+    if (!autoOn) return;
+    t += 0.02;
+    const ex = Math.sin(t) * 0.8;
+    const ey = Math.cos(t * 0.7) * 0.5;
+    coreModel.setParameterValueById("ParamEyeBallX", ex);
+    coreModel.setParameterValueById("ParamEyeBallY", ey);
+    coreModel.setParameterValueById("ParamAngleX", ex * 20);
+    coreModel.setParameterValueById("ParamAngleY", ey * 15);
+  });
+
+  // FPS 统计
+  let frameCount = 0, lastTime = performance.now();
+  app.ticker.add(() => {
+    frameCount++;
+    const now = performance.now();
+    if (now - lastTime >= 1000) {
+      const fps = (frameCount * 1000 / (now - lastTime)).toFixed(1);
+      document.getElementById("stats").textContent = `渲染 FPS: ${fps} | 模型尺寸: ${model.width.toFixed(0)}×${model.height.toFixed(0)} | 缩放: ${scale.toFixed(3)}`;
+      frameCount = 0;
+      lastTime = now;
+    }
+  });
+
+  // 折叠/展开 panel
+  document.getElementById("toggle").addEventListener("click", () => {
+    document.getElementById("panel").classList.toggle("collapsed");
+  });
+
+  // 真·摄像头跟随：face-api.js tiny_face_detector 实时面部检测
+  const camPreview = document.getElementById("cam-preview");
+  const camVideo = document.getElementById("cam-video");
+  const camOverlay = document.getElementById("cam-overlay");
+  let camStream = null;
+  let faceApiReady = false;
+  let followOn = false;
+  let detectLoop = null;
+  let targetParams = {eyeX: 0, eyeY: 0, angX: 0, angY: 0};
+
+  let mimicOn = false;
+  let exprReady = false;
+  let targetExpr = {smile: 0, mouthOpen: 0, browUp: 0, browAngry: 0, mouthForm: 0};
+
+  const initFaceApi = async () => {
+    log("加载 face-api detector...");
+    const modelUrl = "https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/";
+    await faceapi.nets.tinyFaceDetector.loadFromUri(modelUrl);
+    faceApiReady = true;
+    log("✅ tiny_face_detector ready");
+  };
+
+  const initExprApi = async () => {
+    log("加载 face-expression 模型...");
+    const modelUrl = "https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/";
+    await faceapi.nets.faceExpressionNet.loadFromUri(modelUrl);
+    await faceapi.nets.faceLandmark68Net.loadFromUri(modelUrl);
+    exprReady = true;
+    log("✅ expression + landmark68 ready");
+  };
+
+  // 表情 → Live2D 参数映射 (强 sigmoid 放大 — 拐点 0.20，让小幅度表情立刻拉满)
+  // f(0.15)≈0.27, f(0.20)≈0.5, f(0.30)≈0.88, f(0.4)≈0.98
+  const boost = (p) => 1 / (1 + Math.exp(-12 * (p - 0.20)));
+  const mapExpressionToParams = (expressions) => {
+    const e = expressions;
+    const happy = e.happy || 0;
+    const surprised = e.surprised || 0;
+    const angry = e.angry || 0;
+    const sad = e.sad || 0;
+    const happyB = boost(happy);
+    const surprisedB = boost(surprised);
+    const sadB = boost(sad);
+    const angryB = boost(angry);
+    targetExpr.smile = happyB;                                       // 眯眼笑
+    targetExpr.mouthForm = happyB - sadB;                            // -1=哭 1=笑
+    targetExpr.mouthOpen = Math.max(surprisedB, happyB * 0.4);       // 笑/惊都张嘴
+    targetExpr.browUp = surprisedB - sadB * 0.7;                     // 眉毛挑/垂
+    targetExpr.browAngry = -angryB;                                  // 眉毛皱 (-1 = 内八字怒眉)
+    const top = Object.entries(e).sort((a, b) => b[1] - a[1])[0];
+    document.getElementById("emotion").textContent =
+      `检测: ${top[0]} ${(top[1]*100).toFixed(0)}% | 笑${(happy*100).toFixed(0)} 惊${(surprised*100).toFixed(0)} 怒${(angry*100).toFixed(0)} 哀${(sad*100).toFixed(0)} → 映射 smile=${happyB.toFixed(2)} form=${(happyB-sadB).toFixed(2)}`;
+  };
+
+  const startCamera = async () => {
+    if (camStream) return true;
+    try {
+      camStream = await navigator.mediaDevices.getUserMedia({
+        video: {width: 320, height: 240, facingMode: "user"}
+      });
+      camVideo.srcObject = camStream;
+      await new Promise(r => camVideo.onloadedmetadata = r);
+      camOverlay.width = camVideo.videoWidth;
+      camOverlay.height = camVideo.videoHeight;
+      log(`✅ 摄像头 ${camVideo.videoWidth}×${camVideo.videoHeight}`);
+      return true;
+    } catch (e) {
+      log(`❌ 摄像头: ${e.message}`);
+      return false;
+    }
+  };
+
+  document.getElementById("follow").addEventListener("click", async () => {
+    if (!followOn) {
+      if (!faceApiReady) {
+        try { await initFaceApi(); } catch (e) { log(`❌ face-api: ${e.message}`); return; }
+      }
+      if (!(await startCamera())) return;
+      camPreview.classList.remove("hidden");
+      followOn = true;
+      runDetectLoop();
+      log("👀 追踪你的脸：开");
+    } else {
+      followOn = false;
+      camPreview.classList.add("hidden");
+      log("追踪你的脸：关");
+    }
+  });
+
+  document.getElementById("mimic").addEventListener("click", async () => {
+    if (!mimicOn) {
+      if (!faceApiReady) {
+        try { await initFaceApi(); } catch (e) { log(`❌ face-api: ${e.message}`); return; }
+      }
+      if (!exprReady) {
+        try { await initExprApi(); } catch (e) { log(`❌ expr: ${e.message}`); return; }
+      }
+      if (!(await startCamera())) return;
+      camPreview.classList.remove("hidden");
+      mimicOn = true;
+      if (!followOn) runDetectLoop();  // 复用同一 loop
+      log("😀 模仿表情：开");
+    } else {
+      mimicOn = false;
+      // 复位表情
+      targetExpr = {smile: 0, mouthOpen: 0, browUp: 0, browAngry: 0, mouthForm: 0};
+      document.getElementById("emotion").textContent = "表情：—";
+      log("模仿表情：关");
+    }
+  });
+
+  const runDetectLoop = async () => {
+    while (followOn || mimicOn) {
+      try {
+        let det;
+        if (mimicOn && exprReady) {
+          det = await faceapi.detectSingleFace(camVideo,
+            new faceapi.TinyFaceDetectorOptions({inputSize: 320, scoreThreshold: 0.3}))
+            .withFaceLandmarks(true).withFaceExpressions();
+        } else {
+          det = await faceapi.detectSingleFace(camVideo,
+            new faceapi.TinyFaceDetectorOptions({inputSize: 224, scoreThreshold: 0.3}));
+        }
+        const ctx = camOverlay.getContext("2d");
+        ctx.clearRect(0, 0, camOverlay.width, camOverlay.height);
+        if (det) {
+          const b = det.detection ? det.detection.box : det.box;
+          ctx.strokeStyle = "#7df"; ctx.lineWidth = 2;
+          ctx.strokeRect(b.x, b.y, b.width, b.height);
+          if (followOn) {
+            const cx = ((b.x + b.width / 2) / camOverlay.width) * 2 - 1;
+            const cy = ((b.y + b.height / 2) / camOverlay.height) * 2 - 1;
+            targetParams.eyeX = -cx;
+            targetParams.eyeY = -cy;
+            targetParams.angX = -cx * 22;
+            targetParams.angY = -cy * 16;
+          }
+          if (mimicOn && det.expressions) {
+            mapExpressionToParams(det.expressions);
+          }
+        }
+      } catch (e) { /* ignore */ }
+      await new Promise(r => setTimeout(r, 40));
+    }
+  };
+
+  // 平滑插值到 target（独立于 detect 频率，每帧渲染都平滑追近）
+  const smooth = {eyeX: 0, eyeY: 0, angX: 0, angY: 0,
+                  smile: 0, mouthOpen: 0, browUp: 0, browAngry: 0, mouthForm: 0};
+  app.ticker.add(() => {
+    const kPos = 0.35, kExpr = 0.28;
+    if (followOn) {
+      for (const key of ["eyeX", "eyeY", "angX", "angY"]) {
+        smooth[key] += (targetParams[key] - smooth[key]) * kPos;
+      }
+      coreModel.setParameterValueById("ParamEyeBallX", smooth.eyeX);
+      coreModel.setParameterValueById("ParamEyeBallY", smooth.eyeY);
+      coreModel.setParameterValueById("ParamAngleX", smooth.angX);
+      coreModel.setParameterValueById("ParamAngleY", smooth.angY);
+    }
+    if (mimicOn) {
+      for (const key of ["smile", "mouthOpen", "browUp", "browAngry", "mouthForm"]) {
+        smooth[key] += (targetExpr[key] - smooth[key]) * kExpr;
+      }
+      coreModel.setParameterValueById("ParamMouthOpenY", smooth.mouthOpen);
+      coreModel.setParameterValueById("ParamMouthForm", smooth.mouthForm);
+      coreModel.setParameterValueById("ParamEyeLSmile", smooth.smile);
+      coreModel.setParameterValueById("ParamEyeRSmile", smooth.smile);
+      coreModel.setParameterValueById("ParamBrowLY", smooth.browUp);
+      coreModel.setParameterValueById("ParamBrowRY", smooth.browUp);
+      coreModel.setParameterValueById("ParamBrowLForm", smooth.browAngry);
+      coreModel.setParameterValueById("ParamBrowRForm", smooth.browAngry);
+    }
+  });
+
+  log(`✅ 就绪 (model=${MODEL_URL.split("/").slice(-2,-1)[0]})。URL ?m=shizuku 切模型`);
+})();
+</script>
+</body>
+</html>
