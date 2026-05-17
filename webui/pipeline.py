@@ -60,15 +60,28 @@ class GesturePipeline:
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._encoder = None  # 在 _run 里 lazy 初始化（要等 D435 出第一帧才知道分辨率）
+        self._ready = threading.Event()
+        self._init_error: Exception | None = None
 
-    def start(self) -> None:
+    def start(self, init_timeout: float = 30.0) -> None:
         if self._thread is not None:
             return
         self._thread = threading.Thread(target=self._run, name="gesture-pipeline", daemon=True)
         self._thread.start()
+        if not self._ready.wait(timeout=init_timeout):
+            raise RuntimeError(f"GesturePipeline init timeout after {init_timeout}s")
+        if self._init_error is not None:
+            raise self._init_error
 
     def stop(self) -> None:
         self._stop_event.set()
+
+    def health_status(self) -> dict:
+        return {
+            "alive": self._thread is not None and self._thread.is_alive(),
+            "ready": self._ready.is_set() and self._init_error is None,
+            "init_error": str(self._init_error) if self._init_error else None,
+        }
 
     def snapshot(self) -> dict:
         with self._lock:
@@ -90,24 +103,30 @@ class GesturePipeline:
             return None
 
     def _run(self) -> None:
-        d435 = ensure_d435(warmup_frames=10)
-        palm_c, hand_c = load_npu_models(self.device)
-        intrinsics = d435["intrinsics"]
-        fps_t0, fps_count = time.perf_counter(), 0
+        try:
+            d435 = ensure_d435(warmup_frames=10)
+            palm_c, hand_c = load_npu_models(self.device)
+            intrinsics = d435["intrinsics"]
+            fps_t0, fps_count = time.perf_counter(), 0
 
-        # 第一帧拿到分辨率后再造编码器（VA-API 需要预先告诉 ffmpeg 尺寸）
-        first_color, first_depth = grab_frames()
-        h, w = first_color.shape[:2]
-        self._encoder = make_encoder(w, h, fps=30)
-        with self._lock:
-            self.state.encoder_backend = self._encoder.backend
-        print(f"[pipeline] encoder backend = {self._encoder.backend}")
-        # 处理第一帧
-        result = self._infer_frame(first_color, first_depth, palm_c, hand_c, intrinsics)
-        self._draw_overlay(first_color, result)
-        self._publish_jpeg(first_color)
-        fps_count = 1
-        fps_count, fps_t0 = self._update_state(result, fps_count, fps_t0)
+            # 第一帧拿到分辨率后再造编码器（VA-API 需要预先告诉 ffmpeg 尺寸）
+            first_color, first_depth = grab_frames()
+            h, w = first_color.shape[:2]
+            self._encoder = make_encoder(w, h, fps=30)
+            with self._lock:
+                self.state.encoder_backend = self._encoder.backend
+            print(f"[pipeline] encoder backend = {self._encoder.backend}")
+            # 处理第一帧
+            result = self._infer_frame(first_color, first_depth, palm_c, hand_c, intrinsics)
+            self._draw_overlay(first_color, result)
+            self._publish_jpeg(first_color)
+            fps_count = 1
+            fps_count, fps_t0 = self._update_state(result, fps_count, fps_t0)
+        except Exception as e:  # noqa: BLE001
+            self._init_error = e
+            self._ready.set()
+            return
+        self._ready.set()  # 初始化成功后通知 start() 可以返回
 
         while not self._stop_event.is_set():
             try:
