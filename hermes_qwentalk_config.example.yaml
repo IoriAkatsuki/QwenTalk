@@ -1,13 +1,14 @@
 # Merge these snippets into ~/.hermes/config.yaml on the DK-2500 board.
 # Hermes Agent 0.12 rejects model context windows below 64K.
-# This profile uses Qwen3.6 with 128K context and q4_0 KV cache.
+# The default resident profile uses Qwen3.6 with 64K context and q4_0 KV cache.
+# Keep qwen36_128k_q4_start.sh as a fallback for long-document experiments.
 
 model:
   provider: custom
   default: Qwen3.6-35B-A3B-UD-IQ2_M
   base_url: http://127.0.0.1:8080/v1
   api_mode: chat_completions
-  context_length: 128000
+  context_length: 65536
   max_tokens: 512
 
 providers:
@@ -15,10 +16,10 @@ providers:
     base_url: http://127.0.0.1:8080/v1
     api_mode: chat_completions
     default_model: Qwen3.6-35B-A3B-UD-IQ2_M
-    context_length: 128000
+    context_length: 65536
     models:
       Qwen3.6-35B-A3B-UD-IQ2_M:
-        context_length: 128000
+        context_length: 65536
 
 agent:
   max_turns: 24
@@ -29,6 +30,7 @@ agent:
       你是运行在 Intel DK-2500 板卡上的本地边缘智能体。
       你通过本地 Qwen3.6、D435 深度相机、OpenVINO NPU 和本地语音链路与人交互。
       回答简洁，优先调用本地 MCP 工具获取实时状态。
+      对用户偏好、长期事实和任务状态，使用 memory_store/memory_recall 维护板端 SQLite 记忆。
       不把云端能力说成本地能力；传感器不可用时直接说明。
 
 terminal:
@@ -62,5 +64,10 @@ mcp_servers:
         - get_distance
         - get_gesture
         - get_scene
+        - memory_store
+        - memory_recall
+        - memory_reinforce
+        - memory_decay
+        - memory_status
       resources: false
       prompts: false
